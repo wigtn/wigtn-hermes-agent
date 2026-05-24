@@ -34,7 +34,7 @@ DIM  := $(shell tput dim 2>/dev/null)
 RST  := $(shell tput sgr0 2>/dev/null)
 
 .PHONY: help all dev preflight install-codex install-hermes install-ouroboros \
-        install-runtime setup-obsidian configure verify \
+        install-runtime setup-obsidian configure verify sync-vault \
         auth-codex auth-hermes clean doctor
 
 ## help: 사용 가능한 타겟 목록을 보여준다
@@ -57,6 +57,7 @@ help:
 	@echo "  $(BOLD)make auth-hermes$(RST)      Hermes Codex provider 인증 안내"
 	@echo "  $(BOLD)make verify$(RST)           설치 검증"
 	@echo "  $(BOLD)make doctor$(RST)           문제 진단"
+	@echo "  $(BOLD)make sync-vault$(RST)       팀 vault pull/commit/push (TEAM_VAULT_REPO 설정 시)"
 	@echo ""
 	@echo "  현재 런타임: $(BOLD)$(OUROBOROS_RUNTIME)$(RST)   (.env 의 OUROBOROS_RUNTIME 으로 변경)"
 	@echo ""
@@ -207,6 +208,24 @@ doctor:
 	@STACK_HOME=$(STACK_HOME) OBSIDIAN_VAULT=$(OBSIDIAN_VAULT) \
 	  OUROBOROS_RUNTIME=$(OUROBOROS_RUNTIME) \
 	  bash scripts/verify.sh --doctor
+
+## sync-vault: 팀 vault 수동 sync — pull → 본인 host mirror commit → push
+##             평소엔 Obsidian Git 플러그인이 자동으로 하지만, 명시적으로 돌리고 싶을 때.
+sync-vault:
+	@if [ -z "$$TEAM_VAULT_REPO" ]; then \
+	  echo "  ${DIM}TEAM_VAULT_REPO 미설정 — 솔로 모드라 sync 불필요${RST}"; \
+	  exit 0; \
+	fi
+	@if [ ! -d "$(OBSIDIAN_VAULT)/.git" ]; then \
+	  echo "  [WARN] $(OBSIDIAN_VAULT) 가 git repo 가 아님 — make setup-obsidian 먼저"; \
+	  exit 1; \
+	fi
+	@echo "$(DIM)→ vault sync ($(OBSIDIAN_VAULT))$(RST)"
+	@cd "$(OBSIDIAN_VAULT)" && git pull --rebase --autostash 2>&1 | sed 's/^/  /'
+	@cd "$(OBSIDIAN_VAULT)" && git add "ouroboros/$$HOSTNAME_KIND" 2>/dev/null \
+	  && git diff --cached --quiet \
+	     || (git commit -m "vault: auto-sync from $$HOSTNAME_KIND" && git push)
+	@echo "  $(BOLD)✓$(RST) sync 완료"
 
 ## clean: 생성된 config 를 제거한다 (CLI 설치본은 건드리지 않음)
 clean:

@@ -7,13 +7,25 @@ set -euo pipefail
 STACK_HOME="${STACK_HOME:-$HOME/.agent-stack}"
 VAULT="${OBSIDIAN_VAULT:-$HOME/AgentStackVault}"
 RUNTIME="${OUROBOROS_RUNTIME:-codex}"
+TEAM_VAULT_REPO="${TEAM_VAULT_REPO:-}"
+HOSTNAME_KIND="${HOSTNAME_KIND:-$(scutil --get LocalHostName 2>/dev/null || hostname -s)}"
+ORG="${ORG:-wigtn}"
+
+# 팀 모드면 mirror 를 vault/ouroboros/<host>/ 아래로 (충돌 방지)
+if [ -n "$TEAM_VAULT_REPO" ]; then
+  MIRROR_BASE="${VAULT}/ouroboros/${HOSTNAME_KIND}"
+  MODE="팀 (${ORG}, host=${HOSTNAME_KIND})"
+else
+  MIRROR_BASE="${VAULT}"
+  MODE="솔로"
+fi
 
 BOLD=$(tput bold 2>/dev/null || true)
 DIM=$(tput dim 2>/dev/null || true)
 RST=$(tput sgr0 2>/dev/null || true)
 
 echo ""
-echo "→ 구성 연결 (runtime=${RUNTIME})"
+echo "→ 구성 연결 (runtime=${RUNTIME}, mode=${MODE})"
 echo "─────────────────────────────────────────"
 
 mkdir -p "$STACK_HOME"
@@ -21,14 +33,17 @@ mkdir -p "$STACK_HOME"
 # stack-level config — 이 레포가 관리하는 단일 진실 공급원
 cat > "$STACK_HOME/stack.yaml" <<EOF
 # agent-stack 통합 구성 — make configure 가 생성
+org: ${ORG}
 runtime: ${RUNTIME}
+hostname_kind: ${HOSTNAME_KIND}
 obsidian_vault: ${VAULT}
-# Ouroboros Ledger 출력을 Vault 로 미러링
+team_vault_repo: ${TEAM_VAULT_REPO}
+# Ouroboros Ledger 출력 mirror — 팀 모드면 호스트별 분리 디렉토리로
 mirror:
-  specs:       ${VAULT}/specs
-  journal:     ${VAULT}/journal
-  evaluations: ${VAULT}/evaluations
-  seeds:       ${VAULT}/seeds
+  specs:       ${MIRROR_BASE}/specs
+  journal:     ${MIRROR_BASE}/journal
+  evaluations: ${MIRROR_BASE}/evaluations
+  seeds:       ${MIRROR_BASE}/seeds
 EOF
 echo "  생성: $STACK_HOME/stack.yaml"
 

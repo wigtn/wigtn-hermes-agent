@@ -67,12 +67,32 @@ fi
   && ok "stack.yaml 존재" \
   || miss "stack.yaml 없음 → make configure"
 
-# --- Obsidian Vault ---
+# --- Obsidian Vault (솔로/팀 모드 자동 분기) ---
+TEAM_VAULT_REPO="${TEAM_VAULT_REPO:-}"
+HOSTNAME_KIND="${HOSTNAME_KIND:-$(scutil --get LocalHostName 2>/dev/null || hostname -s)}"
+
 if [ -d "$VAULT" ]; then
   ok "Obsidian Vault: $VAULT"
-  for d in specs journal evaluations seeds; do
-    [ -d "$VAULT/$d" ] || warn "Vault 하위 폴더 누락: $d/"
-  done
+  if [ -n "$TEAM_VAULT_REPO" ]; then
+    # 팀 모드
+    if [ -d "$VAULT/.git" ]; then
+      ok "팀 vault (git): $(cd "$VAULT" && git remote get-url origin 2>/dev/null || echo 'no origin')"
+      DIRTY=$(cd "$VAULT" && git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      [ "$DIRTY" = "0" ] && ok "vault 깨끗함" || note "vault 변경 $DIRTY 건 (commit/push 필요)"
+    else
+      miss "$VAULT 가 git repo 가 아님 — make setup-obsidian 재실행"
+    fi
+    # 본인 호스트 ouroboros mirror 영역
+    for d in specs journal evaluations seeds; do
+      [ -d "$VAULT/ouroboros/$HOSTNAME_KIND/$d" ] \
+        || warn "본인 mirror 영역 누락: ouroboros/$HOSTNAME_KIND/$d/"
+    done
+  else
+    # 솔로 모드
+    for d in specs journal evaluations seeds; do
+      [ -d "$VAULT/$d" ] || warn "Vault 하위 폴더 누락: $d/"
+    done
+  fi
 else
   miss "Obsidian Vault 없음 → make setup-obsidian"
 fi

@@ -4,21 +4,56 @@
 # 빈 Mac mini 에서 동작 가능한 상태까지 한 번에 자동 진행한다.
 #
 # 사용 1) curl | bash (가장 간단):
-#   curl -fsSL https://raw.githubusercontent.com/wigtn/wigtn-hermes-agent/main/init.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wigtn/wigtn-hermes-agent/main/init.sh \
+#     | ORG=wigtn bash
 #
 # 사용 2) 이미 clone 했다면 레포 안에서 직접 실행:
-#   bash init.sh
+#   ORG=wigtn bash init.sh
 #
 # 환경변수 override:
-#   REPO_URL  — clone 할 git URL (기본: 공식 레포)
-#   REPO_DIR  — clone 위치 (기본: $HOME/agent-stack)
+#   ORG       — 조직 프로파일 (wigtn | brain-crew). 기본: wigtn
+#   REPO_URL  — agent-stack git URL (기본: 공식 레포)
+#   REPO_DIR  — agent-stack clone 위치 (기본: $HOME/agent-stack)
 #   RUNTIME   — codex (기본) 또는 hermes — .env 에 자동 기록
+#
+#   TEAM_VAULT_REPO — 팀 vault git URL. ORG 프로파일이 자동 설정하지만 override 가능
+#   OBSIDIAN_VAULT  — vault 로컬 경로. ORG 프로파일 기본값 사용
+#   STACK_HOME      — agent-stack config 보관 위치. ORG 프로파일 기본값 사용
+#   HOSTNAME_KIND   — vault 안의 ouroboros/<이 이름>/ 하위에 mirror. 기본: scutil hostname
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/wigtn/wigtn-hermes-agent.git}"
 REPO_DIR="${REPO_DIR:-$HOME/agent-stack}"
 RUNTIME="${RUNTIME:-codex}"
+ORG="${ORG:-wigtn}"
+
+# 조직 프로파일 — TEAM_VAULT_REPO / OBSIDIAN_VAULT / STACK_HOME 기본값 결정
+# `:=` 패턴이라 사용자가 명시한 값이 우선
+case "$ORG" in
+  wigtn)
+    : "${TEAM_VAULT_REPO:=git@github.com:wigtn/wigtn-team-wiki.git}"
+    : "${OBSIDIAN_VAULT:=$HOME/WigtnVault}"
+    : "${STACK_HOME:=$HOME/.wigtn-stack}"
+    ;;
+  brain-crew|braincrew)
+    # 구현 예정 — 현재는 placeholder
+    echo "  [WARN] ORG=brain-crew 는 아직 vault 레포가 준비되지 않았습니다." >&2
+    echo "         TEAM_VAULT_REPO 환경변수로 수동 지정 필요." >&2
+    : "${TEAM_VAULT_REPO:=}"
+    : "${OBSIDIAN_VAULT:=$HOME/BraincrewVault}"
+    : "${STACK_HOME:=$HOME/.braincrew-stack}"
+    ;;
+  *)
+    echo "  [ERR] Unknown ORG: $ORG (wigtn | brain-crew 중 하나, 또는 모든 env 수동 지정)" >&2
+    exit 1
+    ;;
+esac
+
+# 호스트별 ouroboros mirror 분리용 (충돌 방지)
+: "${HOSTNAME_KIND:=$(scutil --get LocalHostName 2>/dev/null || hostname -s)}"
+
+export ORG TEAM_VAULT_REPO OBSIDIAN_VAULT STACK_HOME HOSTNAME_KIND
 
 BOLD=$(tput bold 2>/dev/null || true)
 DIM=$(tput dim 2>/dev/null || true)
@@ -184,24 +219,34 @@ cd "$REPO_DIR"
 echo ""
 
 # --------------------------------------------------------------------------
-# 6. .env 준비
+# 6. .env 준비 — ORG 프로파일 + RUNTIME + TEAM_VAULT_REPO 기록
 # --------------------------------------------------------------------------
-say "[6/8] .env 준비"
+say "[6/8] .env 준비 (ORG=$ORG, runtime=$RUNTIME, host=$HOSTNAME_KIND)"
 if [ ! -f .env ]; then
   cp .env.example .env
-  # RUNTIME 환경변수가 hermes 면 .env 에도 반영
-  if [ "$RUNTIME" = "hermes" ]; then
-    if grep -q '^OUROBOROS_RUNTIME=' .env; then
-      sed -i.bak 's/^OUROBOROS_RUNTIME=.*/OUROBOROS_RUNTIME=hermes/' .env && rm -f .env.bak
-    else
-      echo "OUROBOROS_RUNTIME=hermes" >> .env
-    fi
-    info "OUROBOROS_RUNTIME=hermes 적용"
-  fi
-  ok ".env 생성 (OUROBOROS_RUNTIME=$RUNTIME)"
-else
-  ok ".env 이미 존재 (유지)"
 fi
+
+# upsert helper: .env 안의 KEY=... 라인을 교체 또는 추가
+upsert_env() {
+  local key="$1" val="$2"
+  if grep -q "^$key=" .env 2>/dev/null; then
+    sed -i.bak "s|^$key=.*|$key=$val|" .env && rm -f .env.bak
+  else
+    echo "$key=$val" >> .env
+  fi
+}
+
+upsert_env OUROBOROS_RUNTIME "$RUNTIME"
+upsert_env ORG "$ORG"
+upsert_env HOSTNAME_KIND "$HOSTNAME_KIND"
+[ -n "$TEAM_VAULT_REPO" ] && upsert_env TEAM_VAULT_REPO "$TEAM_VAULT_REPO"
+upsert_env OBSIDIAN_VAULT "$OBSIDIAN_VAULT"
+upsert_env STACK_HOME "$STACK_HOME"
+
+ok ".env 작성 완료"
+[ -n "$TEAM_VAULT_REPO" ] \
+  && info "team vault: $TEAM_VAULT_REPO" \
+  || info "solo 모드 (TEAM_VAULT_REPO 미설정 — 로컬 vault 만)"
 echo ""
 
 # --------------------------------------------------------------------------
