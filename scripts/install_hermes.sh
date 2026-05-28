@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # install_hermes.sh — Hermes CLI 설치
 #   Hermes 는 50+ provider 를 지원. ChatGPT Pro 구독을 그대로 쓰려면
-#   설치 후 "OpenAI Codex" provider 를 선택하면 codex CLI 와 같은
-#   ChatGPT OAuth 통로를 거쳐 동일 Pro 쿼터를 소비한다.
-#   다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등)로 가면 별도 결제.
+#   설치 후 'openai-codex' provider 로 OAuth (init.sh / make auth-hermes 가 자동/안내).
+#   다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등) 로 가면 별도 결제.
 set -euo pipefail
 
 BOLD=$(tput bold 2>/dev/null || true)
@@ -15,7 +14,7 @@ echo "→ Hermes CLI 설치"
 echo "─────────────────────────────────────────"
 
 if command -v hermes >/dev/null 2>&1; then
-  echo "  hermes CLI 이미 설치됨: $(hermes --version 2>/dev/null || echo '버전 확인 불가')"
+  echo "  hermes CLI 이미 설치됨: $(hermes --version 2>/dev/null | head -1 || echo '버전 확인 불가')"
   echo "  postinstall 재실행 (멱등):"
   hermes postinstall 2>/dev/null || true
 else
@@ -33,10 +32,12 @@ else
     else
       echo "  ${BOLD}[WARN]${RST} 자동 설치 실패 (네트워크 차단 또는 URL 변경 가능)."
       echo "          수동 설치: https://github.com/NousResearch/hermes-agent 참조"
-      echo "          설치 후 'make verify' 로 확인하세요."
       exit 0
     fi
   fi
+
+  # 새로 깐 바이너리가 현재 셸 PATH 캐시에 보이게
+  hash -r 2>/dev/null || true
 
   if command -v hermes >/dev/null 2>&1; then
     echo "  postinstall 실행 (스킬·메모리·설정 초기화):"
@@ -50,20 +51,21 @@ if ! command -v hermes >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "  설치 완료: $(hermes --version 2>/dev/null || echo 'hermes')"
+echo "  설치 완료: $(hermes --version 2>/dev/null | head -1 || echo 'hermes')"
+echo "  $(command -v hermes)"
 echo ""
 echo "  ${BOLD}다음 단계:${RST} provider 인증"
 echo ""
 echo "  ChatGPT Pro 구독을 그대로 쓰려면 (권장, 추가 결제 없음):"
 echo ""
 echo "      ${BOLD}make auth-hermes${RST}"
+echo "        또는 한 줄:"
+echo "      ${BOLD}hermes auth add openai-codex --type oauth${RST}"
 echo ""
 echo "  다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등) 로 가려면:"
 echo ""
 echo "      ${BOLD}hermes model${RST}                        # 인터랙티브 메뉴"
 echo "      ${BOLD}hermes config set model.provider <name>${RST}  # 비대화식"
 echo ""
-echo "  ${DIM}참고: Hermes v0.14+ 는 import 명령이 없습니다.${RST}"
-echo "  ${DIM}      codex CLI 와 별도로 'hermes auth add openai-codex --type oauth' 필요.${RST}"
-echo "  ${DIM}      양쪽 같은 ChatGPT Pro 계정이라 쿼터는 공유됩니다.${RST}"
+echo "  ${DIM}참고: 양쪽 같은 ChatGPT Pro 계정으로 OAuth 하면 쿼터가 공유됩니다.${RST}"
 echo ""

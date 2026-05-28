@@ -1,59 +1,23 @@
 #!/usr/bin/env bash
-# init.sh — agent-stack 빈 Mac mini 부트스트랩
+# init.sh — wigtn-hermes-bootstrap 빈 Mac mini 부트스트랩 (Hermes-only)
 # ---------------------------------------------------------------------------
-# 빈 Mac mini 에서 동작 가능한 상태까지 한 번에 자동 진행한다.
+# 빈 Mac mini 에서 Hermes Agent 가 동작 가능한 상태까지 한 번에 자동 진행.
+# ChatGPT Pro 구독 쿼터를 Hermes 의 openai-codex provider 로 그대로 사용.
 #
 # 사용 1) curl | bash (가장 간단):
-#   curl -fsSL https://raw.githubusercontent.com/wigtn/wigtn-hermes-agent/main/init.sh \
-#     | ORG=wigtn bash
+#   curl -fsSL https://raw.githubusercontent.com/wigtn/wigtn-hermes-agent/main/init.sh | bash
 #
 # 사용 2) 이미 clone 했다면 레포 안에서 직접 실행:
-#   ORG=wigtn bash init.sh
+#   bash init.sh
 #
 # 환경변수 override:
-#   ORG       — 조직 프로파일 (wigtn | brain-crew). 기본: wigtn
-#   REPO_URL  — agent-stack git URL (기본: 공식 레포)
-#   REPO_DIR  — agent-stack clone 위치 (기본: $HOME/agent-stack)
-#   RUNTIME   — codex (기본) 또는 hermes — .env 에 자동 기록
-#
-#   TEAM_VAULT_REPO — 팀 vault git URL. ORG 프로파일이 자동 설정하지만 override 가능
-#   OBSIDIAN_VAULT  — vault 로컬 경로. ORG 프로파일 기본값 사용
-#   STACK_HOME      — agent-stack config 보관 위치. ORG 프로파일 기본값 사용
-#   HOSTNAME_KIND   — vault 안의 ouroboros/<이 이름>/ 하위에 mirror. 기본: scutil hostname
+#   REPO_URL  — 이 레포 git URL (기본: 공식 레포)
+#   REPO_DIR  — clone 위치 (기본: $HOME/wigtn-hermes)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/wigtn/wigtn-hermes-agent.git}"
-REPO_DIR="${REPO_DIR:-$HOME/agent-stack}"
-RUNTIME="${RUNTIME:-codex}"
-ORG="${ORG:-wigtn}"
-
-# 조직 프로파일 — TEAM_VAULT_REPO / OBSIDIAN_VAULT / STACK_HOME 기본값 결정
-# `:=` 패턴이라 사용자가 명시한 값이 우선
-case "$ORG" in
-  wigtn)
-    # 솔로 모드 기본 — SSH key 없어도 끊김 없이 진행.
-    # 팀 vault 쓰려면 명시적으로 지정:
-    #   TEAM_VAULT_REPO=git@github.com:wigtn/wigtn-team-wiki.git ORG=wigtn bash init.sh
-    : "${TEAM_VAULT_REPO:=}"
-    : "${OBSIDIAN_VAULT:=$HOME/WigtnVault}"
-    : "${STACK_HOME:=$HOME/.wigtn-stack}"
-    ;;
-  brain-crew|braincrew)
-    : "${TEAM_VAULT_REPO:=}"
-    : "${OBSIDIAN_VAULT:=$HOME/BraincrewVault}"
-    : "${STACK_HOME:=$HOME/.braincrew-stack}"
-    ;;
-  *)
-    echo "  [ERR] Unknown ORG: $ORG (wigtn | brain-crew 중 하나, 또는 모든 env 수동 지정)" >&2
-    exit 1
-    ;;
-esac
-
-# 호스트별 ouroboros mirror 분리용 (충돌 방지)
-: "${HOSTNAME_KIND:=$(scutil --get LocalHostName 2>/dev/null || hostname -s)}"
-
-export ORG TEAM_VAULT_REPO OBSIDIAN_VAULT STACK_HOME HOSTNAME_KIND
+REPO_DIR="${REPO_DIR:-$HOME/wigtn-hermes}"
 
 BOLD=$(tput bold 2>/dev/null || true)
 DIM=$(tput dim 2>/dev/null || true)
@@ -73,16 +37,29 @@ wait_enter() {
   echo "  ${YELLOW}완료 후 Enter 를 누르세요:${RST}"
   if [ -t 0 ]; then
     read -r _
-  elif [ -r /dev/tty ]; then
+  elif ( exec < /dev/tty ) 2>/dev/null; then
     read -r _ < /dev/tty
   else
     info "비대화 환경 감지 — 자동 진행 (Xcode CLT 설치가 완료되지 않았으면 다시 실행)"
   fi
 }
 
+has_tty() {
+  [ -t 0 ] && return 0
+  ( exec < /dev/tty ) 2>/dev/null
+}
+
+run_with_tty() {
+  if [ -t 0 ]; then
+    "$@"
+  else
+    "$@" < /dev/tty
+  fi
+}
+
 echo ""
 say "═══════════════════════════════════════════════════════════"
-say " agent-stack 부트스트랩 — 빈 Mac mini → 동작 가능한 상태"
+say " wigtn-hermes-bootstrap — 빈 Mac mini → Hermes 동작"
 say "═══════════════════════════════════════════════════════════"
 echo ""
 
@@ -105,7 +82,7 @@ echo ""
 # --------------------------------------------------------------------------
 # 1. Xcode Command Line Tools
 # --------------------------------------------------------------------------
-say "[1/8] Xcode Command Line Tools"
+say "[1/6] Xcode Command Line Tools"
 if ! xcode-select -p >/dev/null 2>&1; then
   info "설치 트리거 — GUI 팝업이 뜹니다"
   xcode-select --install 2>/dev/null || true
@@ -123,7 +100,7 @@ echo ""
 # --------------------------------------------------------------------------
 # 2. Homebrew
 # --------------------------------------------------------------------------
-say "[2/8] Homebrew"
+say "[2/6] Homebrew"
 if ! command -v brew >/dev/null 2>&1; then
   info "Homebrew 설치 — sudo 비밀번호가 필요할 수 있습니다"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -146,10 +123,10 @@ ok "brew: $(brew --version | head -1)"
 echo ""
 
 # --------------------------------------------------------------------------
-# 3. 필수 brew 패키지
+# 3. 필수 brew 패키지 (Hermes 가 필요로 하는 것만)
 # --------------------------------------------------------------------------
-say "[3/8] 필수 패키지 (python@3.12, node, git, pipx, jq, gettext)"
-BREW_PKGS=(python@3.12 node git pipx jq gettext)
+say "[3/6] 필수 패키지 (python@3.12, git, pipx, jq, gettext)"
+BREW_PKGS=(python@3.12 git pipx jq gettext)
 for pkg in "${BREW_PKGS[@]}"; do
   if brew list "$pkg" >/dev/null 2>&1; then
     ok "$pkg (이미 설치)"
@@ -159,18 +136,16 @@ for pkg in "${BREW_PKGS[@]}"; do
   fi
 done
 
-# python@3.12 의 unversioned python3 심링크는 libexec/bin 에 있음.
-# 두 경로 모두 PATH 앞에 추가해서 'python3' 가 3.12 로 해석되게.
+# python@3.12 unversioned 심링크는 libexec/bin 에 있음.
 PY312_PREFIX="$(brew --prefix python@3.12 2>/dev/null)"
 if [ -d "$PY312_PREFIX" ]; then
   export PATH="$PY312_PREFIX/libexec/bin:$PY312_PREFIX/bin:$PATH"
-  # 영구 등록 (시스템 python3 보다 brew python@3.12 가 우선되도록)
   SHELLRC="$HOME/.zprofile"
   [ "${SHELL##*/}" = "bash" ] && SHELLRC="$HOME/.bash_profile"
   if ! grep -q "python@3.12/libexec/bin" "$SHELLRC" 2>/dev/null; then
     {
       echo ''
-      echo '# python@3.12 unversioned shims (added by agent-stack init.sh)'
+      echo '# python@3.12 unversioned shims (added by wigtn-hermes-bootstrap)'
       echo "export PATH=\"$PY312_PREFIX/libexec/bin:\$PATH\""
     } >> "$SHELLRC"
     info "$SHELLRC 에 python@3.12 PATH 영구 등록"
@@ -186,24 +161,10 @@ hash -r 2>/dev/null || true
 echo ""
 
 # --------------------------------------------------------------------------
-# 4. Obsidian (GUI 앱)
+# 4. 레포 준비 (clone 필요시)
 # --------------------------------------------------------------------------
-say "[4/8] Obsidian 데스크톱 앱"
-if [ -d "/Applications/Obsidian.app" ]; then
-  ok "Obsidian.app 발견 (/Applications)"
-elif brew list --cask obsidian >/dev/null 2>&1; then
-  ok "Obsidian (brew cask 설치됨)"
-else
-  info "Obsidian 설치..."
-  brew install --cask obsidian || warn "Obsidian 설치 실패 — 나중에 https://obsidian.md/download 에서 수동"
-fi
-echo ""
-
-# --------------------------------------------------------------------------
-# 5. 레포 위치 확인 (clone 필요시)
-# --------------------------------------------------------------------------
-say "[5/8] 레포 준비"
-if [ -f "./Makefile" ] && [ -f "./scripts/install_codex.sh" ] && [ -f "./README.md" ]; then
+say "[4/6] 레포 준비"
+if [ -f "./Makefile" ] && [ -f "./scripts/install_hermes.sh" ] && [ -f "./README.md" ]; then
   REPO_DIR="$(pwd)"
   ok "이미 레포 안: $REPO_DIR"
 elif [ -d "$REPO_DIR/.git" ]; then
@@ -219,126 +180,49 @@ cd "$REPO_DIR"
 echo ""
 
 # --------------------------------------------------------------------------
-# 6. .env 준비 — ORG 프로파일 + RUNTIME + TEAM_VAULT_REPO 기록
+# 5. make install — Hermes 설치 + 검증
 # --------------------------------------------------------------------------
-say "[6/8] .env 준비 (ORG=$ORG, runtime=$RUNTIME, host=$HOSTNAME_KIND)"
-if [ ! -f .env ]; then
-  cp .env.example .env
-fi
-
-# upsert helper: .env 안의 KEY=... 라인을 교체 또는 추가
-upsert_env() {
-  local key="$1" val="$2"
-  if grep -q "^$key=" .env 2>/dev/null; then
-    sed -i.bak "s|^$key=.*|$key=$val|" .env && rm -f .env.bak
-  else
-    echo "$key=$val" >> .env
-  fi
-}
-
-upsert_env OUROBOROS_RUNTIME "$RUNTIME"
-upsert_env ORG "$ORG"
-upsert_env HOSTNAME_KIND "$HOSTNAME_KIND"
-[ -n "$TEAM_VAULT_REPO" ] && upsert_env TEAM_VAULT_REPO "$TEAM_VAULT_REPO"
-upsert_env OBSIDIAN_VAULT "$OBSIDIAN_VAULT"
-upsert_env STACK_HOME "$STACK_HOME"
-
-ok ".env 작성 완료"
-[ -n "$TEAM_VAULT_REPO" ] \
-  && info "team vault: $TEAM_VAULT_REPO" \
-  || info "solo 모드 (TEAM_VAULT_REPO 미설정 — 로컬 vault 만)"
+say "[5/6] make install (preflight → install-hermes → verify)"
 echo ""
-
-# --------------------------------------------------------------------------
-# 7. make all — 자동 설치 본체
-# --------------------------------------------------------------------------
-say "[7/8] make all 실행 (preflight → CLI → ouroboros → configure → verify)"
-echo ""
-if make all; then
+if make install; then
   echo ""
-  ok "${GREEN}make all 완료${RST}"
+  ok "${GREEN}make install 완료${RST}"
 else
-  err "make all 일부 단계 실패 — 'make doctor' 로 진단"
+  warn "make install 일부 단계 실패 — 'make doctor' 로 진단"
   echo ""
 fi
 echo ""
 
 # --------------------------------------------------------------------------
-# 8. Obsidian Vault 디렉토리 생성
+# 6. 인증 자동 트리거 — TTY 있고 아직 인증 안 됐으면 바로 띄움
 # --------------------------------------------------------------------------
-say "[8/8] Obsidian Vault 디렉토리 생성"
-make setup-obsidian
+say "[6/6] Hermes openai-codex provider 인증"
+HERMES_HAS_OPENAI_CODEX=0
+if command -v hermes >/dev/null 2>&1; then
+  hermes auth list 2>/dev/null | grep -q '^openai-codex' && HERMES_HAS_OPENAI_CODEX=1
+fi
+
+if [ "$HERMES_HAS_OPENAI_CODEX" = "1" ]; then
+  ok "Hermes openai-codex provider 인증 이미 완료"
+elif has_tty && command -v hermes >/dev/null 2>&1; then
+  info "Hermes 인증 시작 (openai-codex OAuth — 브라우저가 열립니다)"
+  run_with_tty hermes auth add openai-codex --type oauth \
+    || warn "인증 실패/취소 — 나중에 'make auth-hermes' 로 재시도"
+else
+  warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}make auth-hermes${RST}"
+fi
 echo ""
 
 # --------------------------------------------------------------------------
-# 9. 남은 수동 단계 안내
+# 완료 안내
 # --------------------------------------------------------------------------
-# set -e + pipefail 환경에서 grep 미매치가 스크립트를 죽이지 않도록 || true
-FINAL_RUNTIME=$( (grep -E '^OUROBOROS_RUNTIME=' .env 2>/dev/null || true) | tail -1 | cut -d= -f2 | tr -d ' "')
-FINAL_RUNTIME="${FINAL_RUNTIME:-codex}"
-
-VAULT_PATH=$( (grep -E '^OBSIDIAN_VAULT=' .env 2>/dev/null || true) | tail -1 | cut -d= -f2 | tr -d ' "')
-VAULT_PATH="${VAULT_PATH:-$HOME/AgentStackVault}"
-
-echo ""
 echo "${BOLD}═══════════════════════════════════════════════════════════${RST}"
 echo "${BOLD}${GREEN} 부트스트랩 완료.${RST}"
 echo "${BOLD}═══════════════════════════════════════════════════════════${RST}"
 echo ""
-
-# --------------------------------------------------------------------------
-# 9. 인증 자동 트리거 — TTY 있고 아직 인증 안 됐으면 바로 띄움
-# --------------------------------------------------------------------------
-has_tty() {
-  [ -t 0 ] && return 0
-  # /dev/tty 가 readable 하다고 나와도 실제 open 실패하는 환경(daemon, sandbox) 있음
-  ( exec < /dev/tty ) 2>/dev/null
-}
-run_with_tty() {
-  # curl|bash 환경(stdin 이 파이프)에서도 /dev/tty 로 사용자 입력 전달
-  if [ -t 0 ]; then
-    "$@"
-  else
-    "$@" < /dev/tty
-  fi
-}
-
-if [ "$FINAL_RUNTIME" = "hermes" ]; then
-  # Hermes v0.14+ 기준: provider id 는 'openai-codex', type oauth.
-  # 'hermes auth import' 명령은 존재하지 않는다 (auth 서브: add/list/remove/reset/status/logout).
-  HERMES_HAS_OPENAI_CODEX=0
-  if command -v hermes >/dev/null 2>&1; then
-    hermes auth list 2>/dev/null | grep -q '^openai-codex' && HERMES_HAS_OPENAI_CODEX=1
-  fi
-
-  if [ "$HERMES_HAS_OPENAI_CODEX" = "1" ]; then
-    ok "Hermes openai-codex provider 인증 이미 완료"
-  elif has_tty && command -v hermes >/dev/null 2>&1; then
-    say "Hermes 인증 시작 (openai-codex OAuth — 브라우저가 열립니다)"
-    run_with_tty hermes auth add openai-codex --type oauth \
-      || warn "인증 실패/취소 — 나중에 'make auth-hermes' 로 재시도"
-  else
-    warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}make auth-hermes${RST}"
-  fi
-else
-  if [ -f "$HOME/.codex/auth.json" ]; then
-    ok "Codex 인증 이미 완료 (~/.codex/auth.json)"
-  elif has_tty && command -v codex >/dev/null 2>&1; then
-    say "Codex 인증 시작 (브라우저 OAuth 가 열립니다)"
-    run_with_tty codex login \
-      || warn "인증 실패/취소 — 나중에 직접 실행: ${BOLD}codex login${RST}"
-  else
-    warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}codex login${RST}"
-  fi
-fi
-echo ""
-
-# --------------------------------------------------------------------------
-# 10. Obsidian 안내 (GUI 라 자동화 불가)
-# --------------------------------------------------------------------------
-echo "  ${BOLD}Obsidian 앱에서 Vault 열기:${RST}"
-echo "       ${BOLD}open -a Obsidian${RST}"
-echo "       → 'Open folder as vault' → ${BOLD}$VAULT_PATH${RST}"
+echo "  ${BOLD}바로 사용:${RST}"
+echo "       ${BOLD}hermes${RST}                       # 인터랙티브 셸"
+echo "       ${BOLD}hermes chat -Q \"hello\"${RST}      # 한 줄 질문"
 echo ""
 echo "${DIM}검증: cd $REPO_DIR && make verify${RST}"
 echo "${DIM}진단: cd $REPO_DIR && make doctor${RST}"
