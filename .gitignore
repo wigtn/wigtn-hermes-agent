@@ -2,3 +2,6 @@
 *.log
 __pycache__/
 .DS_Store
+memory-lake/
+.claude/
+PLANNING/

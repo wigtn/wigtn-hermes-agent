@@ -19,32 +19,43 @@ echo ""
 echo "→ Obsidian Vault 배치 (host=$HOSTNAME_KIND)"
 echo "─────────────────────────────────────────"
 
+TEAM_MODE_OK=0
 if [ -n "$TEAM_VAULT_REPO" ]; then
-  # ─── 팀 모드: git clone or pull ───────────────────────────────────────────
-  echo "  ${BOLD}팀 모드${RST} — TEAM_VAULT_REPO=$TEAM_VAULT_REPO"
+  # ─── 팀 모드 시도: git clone or pull ─────────────────────────────────────
+  echo "  ${BOLD}팀 모드 시도${RST} — TEAM_VAULT_REPO=$TEAM_VAULT_REPO"
   if [ -d "$VAULT/.git" ]; then
     echo "  Vault 이미 존재 — git pull"
-    (cd "$VAULT" && git pull --ff-only --branch "$TEAM_VAULT_BRANCH" 2>/dev/null \
-                 || git pull --ff-only) \
-      && echo "  pull 완료" \
-      || echo "  ${DIM}pull 실패 — 기존 상태 유지${RST}"
+    if (cd "$VAULT" && git pull --ff-only --branch "$TEAM_VAULT_BRANCH" 2>/dev/null \
+                   || git pull --ff-only) ; then
+      echo "  pull 완료"
+    else
+      echo "  ${DIM}pull 실패 — 기존 상태 유지${RST}"
+    fi
+    TEAM_MODE_OK=1
   elif [ -d "$VAULT" ] && [ "$(ls -A "$VAULT" 2>/dev/null)" ]; then
     echo "  ${BOLD}[WARN]${RST} $VAULT 가 이미 존재하지만 git repo 가 아닙니다."
-    echo "         수동 처리 필요. 다른 OBSIDIAN_VAULT 경로 사용을 고려하세요."
+    echo "         솔로 모드로 진행합니다 (TEAM_VAULT_REPO 무시)."
   else
     rm -rf "$VAULT" 2>/dev/null || true
     echo "  clone: $TEAM_VAULT_REPO → $VAULT"
     if git clone --branch "$TEAM_VAULT_BRANCH" "$TEAM_VAULT_REPO" "$VAULT" 2>/dev/null; then
       echo "  clone 완료"
-    elif git clone "$TEAM_VAULT_REPO" "$VAULT"; then
+      TEAM_MODE_OK=1
+    elif git clone "$TEAM_VAULT_REPO" "$VAULT" 2>/dev/null; then
       echo "  clone 완료 (기본 브랜치 사용)"
+      TEAM_MODE_OK=1
     else
-      echo "  ${BOLD}[FAIL]${RST} clone 실패. SSH key 또는 권한을 확인하세요."
-      echo "          'ssh -T git@github.com' 으로 인증 테스트 가능."
-      exit 1
+      echo "  ${BOLD}[WARN]${RST} clone 실패 (SSH key / 권한 / 네트워크)."
+      echo "          ${DIM}솔로 모드로 fallback — 설치 진행을 막지 않습니다.${RST}"
+      echo "          나중에 팀 vault 합류하려면 SSH key 등록 후"
+      echo "            ${BOLD}TEAM_VAULT_REPO=$TEAM_VAULT_REPO make setup-obsidian${RST}"
+      rm -rf "$VAULT" 2>/dev/null || true
+      TEAM_VAULT_REPO=""
     fi
   fi
+fi
 
+if [ "$TEAM_MODE_OK" = "1" ] && [ -n "$TEAM_VAULT_REPO" ]; then
   # 본인 호스트 mirror 디렉토리만 생성 (충돌 방지: 호스트별 분리)
   mkdir -p "$VAULT/ouroboros/$HOSTNAME_KIND"/{specs,journal,evaluations,seeds}
   echo "  본인 mirror 영역: ouroboros/$HOSTNAME_KIND/{specs,journal,evaluations,seeds}"
@@ -52,7 +63,6 @@ if [ -n "$TEAM_VAULT_REPO" ]; then
   # 본인 per-user 디렉토리 (있으면 skip)
   USER_SLUG="${USER}"
   mkdir -p "$VAULT/per-user/$USER_SLUG"
-
 else
   # ─── 솔로 모드: 로컬 빈 vault ────────────────────────────────────────────
   echo "  ${DIM}솔로 모드${RST} (TEAM_VAULT_REPO 미설정)"

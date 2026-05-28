@@ -32,14 +32,14 @@ ORG="${ORG:-wigtn}"
 # `:=` 패턴이라 사용자가 명시한 값이 우선
 case "$ORG" in
   wigtn)
-    : "${TEAM_VAULT_REPO:=git@github.com:wigtn/wigtn-team-wiki.git}"
+    # 솔로 모드 기본 — SSH key 없어도 끊김 없이 진행.
+    # 팀 vault 쓰려면 명시적으로 지정:
+    #   TEAM_VAULT_REPO=git@github.com:wigtn/wigtn-team-wiki.git ORG=wigtn bash init.sh
+    : "${TEAM_VAULT_REPO:=}"
     : "${OBSIDIAN_VAULT:=$HOME/WigtnVault}"
     : "${STACK_HOME:=$HOME/.wigtn-stack}"
     ;;
   brain-crew|braincrew)
-    # 구현 예정 — 현재는 placeholder
-    echo "  [WARN] ORG=brain-crew 는 아직 vault 레포가 준비되지 않았습니다." >&2
-    echo "         TEAM_VAULT_REPO 환경변수로 수동 지정 필요." >&2
     : "${TEAM_VAULT_REPO:=}"
     : "${OBSIDIAN_VAULT:=$HOME/BraincrewVault}"
     : "${STACK_HOME:=$HOME/.braincrew-stack}"
@@ -282,21 +282,53 @@ VAULT_PATH="${VAULT_PATH:-$HOME/AgentStackVault}"
 
 echo ""
 echo "${BOLD}═══════════════════════════════════════════════════════════${RST}"
-echo "${BOLD}${GREEN} 부트스트랩 완료. 남은 수동 단계 2개:${RST}"
+echo "${BOLD}${GREEN} 부트스트랩 완료.${RST}"
 echo "${BOLD}═══════════════════════════════════════════════════════════${RST}"
 echo ""
+
+# --------------------------------------------------------------------------
+# 9. 인증 자동 트리거 — TTY 있고 아직 인증 안 됐으면 바로 띄움
+# --------------------------------------------------------------------------
+has_tty() { [ -t 0 ] || [ -r /dev/tty ]; }
+run_with_tty() {
+  # curl|bash 환경(stdin 이 파이프)에서도 /dev/tty 로 사용자 입력 전달
+  if [ -t 0 ]; then
+    "$@"
+  else
+    "$@" < /dev/tty
+  fi
+}
+
 if [ "$FINAL_RUNTIME" = "hermes" ]; then
-  echo "  ${BOLD}1) Hermes Codex provider 인증${RST} (device code)"
-  echo "       cd $REPO_DIR"
-  echo "       ${BOLD}make auth-hermes${RST}     # 안내 메시지"
-  echo "       ${BOLD}hermes auth add codex-oauth${RST}     # 또는 직접 실행"
+  if [ -f "$HOME/.hermes/auth.json" ]; then
+    ok "Hermes 인증 이미 완료 (~/.hermes/auth.json)"
+  elif [ -f "$HOME/.codex/auth.json" ] && command -v hermes >/dev/null 2>&1; then
+    info "기존 codex 자격증명을 hermes 로 import"
+    hermes auth import codex-cli || warn "import 실패 — 'make auth-hermes' 참조"
+  elif has_tty && command -v hermes >/dev/null 2>&1; then
+    say "Hermes 인증 시작 (device code — 브라우저가 열립니다)"
+    run_with_tty hermes auth add codex-oauth \
+      || warn "인증 실패/취소 — 나중에 'make auth-hermes' 로 재시도"
+  else
+    warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}make auth-hermes${RST}"
+  fi
 else
-  echo "  ${BOLD}1) Codex 인증${RST} (브라우저 OAuth)"
-  echo "       cd $REPO_DIR"
-  echo "       ${BOLD}codex login${RST}"
+  if [ -f "$HOME/.codex/auth.json" ]; then
+    ok "Codex 인증 이미 완료 (~/.codex/auth.json)"
+  elif has_tty && command -v codex >/dev/null 2>&1; then
+    say "Codex 인증 시작 (브라우저 OAuth 가 열립니다)"
+    run_with_tty codex login \
+      || warn "인증 실패/취소 — 나중에 직접 실행: ${BOLD}codex login${RST}"
+  else
+    warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}codex login${RST}"
+  fi
 fi
 echo ""
-echo "  ${BOLD}2) Obsidian 앱에서 Vault 열기${RST}"
+
+# --------------------------------------------------------------------------
+# 10. Obsidian 안내 (GUI 라 자동화 불가)
+# --------------------------------------------------------------------------
+echo "  ${BOLD}Obsidian 앱에서 Vault 열기:${RST}"
 echo "       ${BOLD}open -a Obsidian${RST}"
 echo "       → 'Open folder as vault' → ${BOLD}$VAULT_PATH${RST}"
 echo ""
