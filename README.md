@@ -9,7 +9,7 @@
 
 ## 무엇을, 왜
 
-- **Hermes Agent** — 50+ provider 를 지원하는 self-improving 에이전트 셸. 영구 메모리(`~/.hermes/memories/`), 자동 학습되는 스킬, 비대화 자동화(`hermes chat -Q`) 가 기본 탑재.
+- **Hermes Agent** — 50+ provider 를 지원하는 self-improving 에이전트 셸. 영구 메모리(`~/.hermes/memories/`), 자동 학습되는 스킬, 비대화 자동화(`hermes chat -q "..."`) 가 기본 탑재.
 - **ChatGPT Pro 쿼터 연결** — Hermes 의 `openai-codex` provider 는 OpenAI Codex CLI 와 같은 OAuth 통로(ChatGPT 로그인)를 거쳐 Codex 모델을 호출합니다. 추가 결제 없음.
 
 > ⚠️ Hermes 를 다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등) 로 설정하면 그 때부터는 별도 결제가 발생합니다. 기본 권장 구성은 `openai-codex` provider 입니다.
@@ -72,7 +72,7 @@ make verify
 # → hermes CLI, openai-codex provider 인증 모두 [OK]
 
 # 2) 첫 질문 — Pro 쿼터로 동작 확인
-hermes chat -Q "say hello in one short sentence"
+hermes chat -q "say hello in one short sentence" -Q
 
 # 3) 인터랙티브 셸
 hermes
@@ -98,7 +98,7 @@ hermes
    ├── (b) sudo 비밀번호 (Homebrew)
    └── (c) 브라우저에서 ChatGPT Pro 로그인
 4. make verify → 전부 [OK]
-5. hermes chat -Q "..."   또는   hermes
+5. hermes chat -q "..." -Q   또는   hermes
 ```
 
 ### 시나리오 B — 개발 환경 이미 갖춘 Mac (Python 3.12+, pipx 있음)
