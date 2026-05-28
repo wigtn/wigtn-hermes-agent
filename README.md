@@ -86,6 +86,7 @@ hermes
 | `brew: command not found` (재로그인 후) | `.zprofile` 등록 안 됨 | `eval "$(/opt/homebrew/bin/brew shellenv)"` 그 후 새 터미널 |
 | `hermes: command not found` | pipx PATH 미적용 | `pipx ensurepath` 그 후 새 터미널 |
 | `hermes auth list` 에 openai-codex 없음 | OAuth 안 끝남 | `hermes auth add openai-codex --type oauth` 재시도 |
+| `chat -q "..."` 실행 시 `No inference provider configured` | 인증은 했지만 default provider 미선택 | `hermes model` → "OpenAI Codex" 선택 |
 | 다른 provider 가 잡혔음 | 실수로 다른 provider OAuth | `hermes auth remove <provider>` 후 재인증 |
 
 #### 한 화면 요약
@@ -130,6 +131,18 @@ hermes auth add openai-codex --type oauth
 | `make auth-hermes` | openai-codex provider 인증 안내 |
 | `make verify` | 설치 상태 검증 |
 | `make doctor` | 문제 진단 + 해결책 제시 |
+
+## 검증된 흐름 (이 레포에서 직접 돌려본 결과)
+
+```bash
+make preflight        # python 3.12+ / git / pipx / 디스크 모두 [OK]
+make install-hermes   # 이미 설치되어 있으면 멱등 (postinstall 만 재실행)
+make verify           # 인증 안 했으면 [MISS] hermes 미인증 으로 종료
+make doctor           # MISS 항목별 정확한 해결 가이드 출력
+make auth-hermes      # 안내만 — 실제 OAuth 명령은 사람이 직접
+hermes auth add openai-codex --type oauth   # ★ 브라우저 OAuth (1회)
+hermes chat -q "hello" -Q                   # 응답 받으면 ChatGPT Pro 쿼터 연결 확인
+```
 
 ## 환경 변수 (.env)
 
