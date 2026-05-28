@@ -4,9 +4,9 @@
 #  설계 원칙:
 #    - 자동화 가능한 것은 모두 자동화한다 (CLI 설치, MCP 등록, 디렉토리 배치)
 #    - 사람 손이 반드시 필요한 두 지점에서는 멈추고 명령어만 안내한다:
-#        (1) OAuth 인증   — 브라우저/device code 가 필요
+#        (1) OAuth 인증   — 브라우저 OAuth 필요
 #                          • codex 런타임:  codex login
-#                          • hermes 런타임: hermes auth add codex-oauth
+#                          • hermes 런타임: hermes auth add openai-codex --type oauth
 #        (2) Obsidian 앱  — GUI 데스크톱 앱, 헤드리스 설치 불가
 #    - 토큰/시크릿은 절대 레포에 두지 않는다. .env 는 .gitignore 대상.
 #    - codex / hermes 두 런타임 모두 ChatGPT Pro 구독 쿼터로 동작 가능하다.
@@ -103,7 +103,7 @@ dev:
 	@if [ "$(OUROBOROS_RUNTIME)" = "hermes" ]; then \
 	  command -v hermes >/dev/null 2>&1 \
 	    || echo "  • Hermes CLI 미설치:   $(BOLD)make install-hermes$(RST)"; \
-	  [ -f $$HOME/.hermes/auth.json ] \
+	  hermes auth list 2>/dev/null | grep -q '^openai-codex' \
 	    || echo "  • Hermes 인증 안 됨:   $(BOLD)make auth-hermes$(RST)"; \
 	else \
 	  command -v codex >/dev/null 2>&1 \
@@ -172,25 +172,22 @@ auth-codex:
 	  || echo "먼저 'make install-codex' 를 실행하세요."
 	@echo ""
 
-## auth-hermes: Hermes Codex provider 인증 절차를 안내한다 (자동화 불가)
+## auth-hermes: Hermes openai-codex provider 인증 절차 (자동화 불가 — 브라우저)
 auth-hermes:
 	@echo ""
-	@echo "$(BOLD)Hermes Codex provider 인증 — device code 단계$(RST)"
-	@echo "$(DIM)이 단계는 자동화할 수 없습니다 (브라우저 device code 입력 필요).$(RST)"
+	@echo "$(BOLD)Hermes openai-codex provider 인증 — 브라우저 OAuth$(RST)"
+	@echo "$(DIM)이 단계는 자동화할 수 없습니다 (브라우저 로그인 필요).$(RST)"
 	@echo ""
-	@echo "  방법 A — 기존 codex 자격증명 자동 import (codex login 이미 했다면):"
-	@echo "      $(BOLD)hermes auth import codex-cli$(RST)"
-	@echo "      → ~/.codex/auth.json 을 읽어 ~/.hermes/auth.json 에 복사"
+	@echo "  방법 A — 직접 명령:"
+	@echo "      $(BOLD)hermes auth add openai-codex --type oauth$(RST)"
+	@echo "      → 브라우저가 열리면 ChatGPT Pro 계정으로 로그인"
 	@echo ""
-	@echo "  방법 B — Hermes 에서 직접 device code 로 로그인:"
-	@echo "      $(BOLD)hermes auth add codex-oauth$(RST)"
-	@echo "      → URL 과 코드 표시 → 브라우저에서 ChatGPT 로그인 → 코드 입력"
+	@echo "  방법 B — 인터랙티브 메뉴:"
+	@echo "      $(BOLD)hermes model$(RST) → \"OpenAI Codex\" 선택 → OAuth 진행"
 	@echo ""
-	@echo "  또는 인터랙티브 메뉴로:"
-	@echo "      $(BOLD)hermes model$(RST) → \"OpenAI Codex\" 선택"
-	@echo ""
-	@echo "  → 인증 토큰은 hermes CLI 가 ~/.hermes/auth.json 에 보관합니다"
+	@echo "  → 인증 토큰은 hermes CLI 가 ~/.hermes/ 안에 보관합니다"
 	@echo "  → ChatGPT Pro 쿼터를 codex CLI 와 동일하게 소비합니다"
+	@echo "  → 'hermes auth list' 로 등록된 provider 확인 가능"
 	@echo ""
 	@command -v hermes >/dev/null 2>&1 \
 	  && echo "$(DIM)hermes CLI 감지됨. 위 중 하나 실행 후 'make verify' 로 확인하세요.$(RST)" \

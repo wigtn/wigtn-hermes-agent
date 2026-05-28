@@ -44,17 +44,13 @@ elif [ "$RUNTIME" = "hermes" ]; then
   else
     miss "hermes CLI 미설치 → make install-hermes"
   fi
-  if [ -f "$HOME/.hermes/auth.json" ]; then
-    ok "hermes 인증 완료 (~/.hermes/auth.json)"
-    # 현재 provider 가 codex 계열인지 가볍게 확인 (실패 무해)
-    PROV=$(hermes config get model.provider 2>/dev/null || true)
-    if [ -n "$PROV" ]; then
-      note "hermes provider: $PROV"
-      case "$PROV" in
-        *codex*|*openai*) ok "Codex 계열 provider 감지 → Pro 쿼터 사용 중" ;;
-        *) warn "Codex 계열 provider 가 아님. ChatGPT Pro 쿼터 사용 안 함. 의도된 설정인가요?" ;;
-      esac
-    fi
+  # Hermes v0.14+ 는 'hermes auth list' 로 등록된 provider 를 본다.
+  # (~/.hermes/auth.json 은 더 이상 단일 진실 공급원이 아님)
+  if hermes auth list 2>/dev/null | grep -q '^openai-codex'; then
+    ok "hermes openai-codex provider 인증 완료 (ChatGPT Pro 쿼터)"
+  elif hermes auth list 2>/dev/null | grep -qE '^(anthropic|openai)\b'; then
+    PROV=$(hermes auth list 2>/dev/null | grep -E '^(anthropic|openai)' | head -1 | awk '{print $1}')
+    warn "hermes 인증은 있으나 openai-codex 가 아님 (현재: $PROV) — Pro 쿼터 미사용"
   else
     miss "hermes 미인증 → make auth-hermes"
   fi
@@ -115,10 +111,11 @@ if [ "$MISSING" -eq 1 ]; then
       echo "      → ~/.codex/auth.json 이 다른 \$HOME 에 생성됐을 수 있음. 같은 유저로 실행하세요."
     fi
     if [ "$RUNTIME" = "hermes" ]; then
-      echo "  · hermes 인증이 codex provider 인데 [WARN] 가 뜸"
-      echo "      → hermes config get model.provider 결과 확인. 'openai-codex' 류 이름이어야 함."
-      echo "  · codex login 은 했는데 hermes 가 인식 못 함"
-      echo "      → hermes auth import codex-cli  실행 (codex auth.json 을 hermes 로 복사)"
+      echo "  · hermes auth list 에 openai-codex 가 안 보임"
+      echo "      → hermes auth add openai-codex --type oauth   (브라우저 OAuth)"
+      echo "  · 이미 codex login 으로 codex CLI 는 인증돼 있어도"
+      echo "      hermes 는 별도로 'hermes auth add openai-codex --type oauth' 필요"
+      echo "      (양쪽 같은 ChatGPT Pro 계정이라 쿼터는 공유)"
     fi
     echo "  · ouroboros setup 이 MCP 등록 실패"
     echo "      → ouroboros setup --runtime ${RUNTIME} 를 수동 재실행"

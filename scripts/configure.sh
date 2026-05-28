@@ -74,17 +74,12 @@ if [ "$RUNTIME" = "codex" ]; then
 elif [ "$RUNTIME" = "hermes" ]; then
   echo "  런타임: ${BOLD}hermes${RST}"
   if command -v hermes >/dev/null 2>&1; then
-    if [ -f "$HOME/.hermes/auth.json" ]; then
-      echo "    hermes CLI 설치됨, ~/.hermes/auth.json 존재 — 인증 완료된 것으로 보입니다."
-      # 현재 provider 확인 시도 (실패해도 무해)
-      PROV=$(hermes config get model.provider 2>/dev/null || true)
-      [ -n "$PROV" ] && echo "    현재 provider: $PROV"
-    elif [ -f "$HOME/.codex/auth.json" ]; then
-      echo "    ${DIM}[할 일]${RST} hermes 인증 없음. codex 자격증명을 import 할 수 있습니다:"
-      echo "            ${BOLD}hermes auth import codex-cli${RST}    # 한 줄로 끝"
-      echo "          또는 'make auth-hermes' 로 전체 안내 보기."
+    if hermes auth list 2>/dev/null | grep -q '^openai-codex'; then
+      echo "    hermes openai-codex provider 인증 완료."
     else
-      echo "    ${DIM}[할 일]${RST} 인증 흔적 없음. 'make auth-hermes' 로 절차 안내."
+      echo "    ${DIM}[할 일]${RST} hermes openai-codex 인증 없음:"
+      echo "            ${BOLD}hermes auth add openai-codex --type oauth${RST}"
+      echo "          또는 'make auth-hermes' 로 전체 안내 보기."
     fi
   else
     echo "    ${DIM}[할 일]${RST} hermes CLI 미설치 — 'make install-hermes' 먼저 실행."

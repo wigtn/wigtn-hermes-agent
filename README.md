@@ -14,12 +14,12 @@ Hermes · Ouroboros · Codex · Obsidian 을 한 번의 `make` 로 배치하는 
 
 **Codex CLI 와 Hermes CLI 둘 다 ChatGPT Pro 구독 쿼터로 동작 가능합니다.** 인증 방식·도구 표면은 다르지만, 모두 같은 OAuth 통로(ChatGPT 로그인)를 거쳐 Codex 모델을 호출합니다.
 
-| 런타임 | 인증 명령 | 토큰 위치 | 추가 결제 |
+| 런타임 | 인증 명령 | 확인 명령 | 추가 결제 |
 | :--- | :--- | :--- | :--- |
-| `codex`  | `codex login` (브라우저 OAuth) | `~/.codex/auth.json` | 없음 (Pro 쿼터) |
-| `hermes` | `hermes auth add codex-oauth` (device code) **또는** `hermes model` → "OpenAI Codex" | `~/.hermes/auth.json` | 없음 (Pro 쿼터) |
+| `codex`  | `codex login` (브라우저 OAuth) | `ls ~/.codex/auth.json` | 없음 (Pro 쿼터) |
+| `hermes` | `hermes auth add openai-codex --type oauth` **또는** `hermes model` → "OpenAI Codex" | `hermes auth list` | 없음 (Pro 쿼터) |
 
-Hermes 의 OpenAI Codex provider 는 `~/.codex/auth.json` 의 기존 자격증명을 **자동으로 import** 합니다. 따라서 `codex login` 을 이미 했다면 Hermes 쪽 인증이 즉시 끝납니다.
+Hermes v0.14+ 는 codex 자격증명 import 명령이 없습니다. codex CLI 와 hermes 는 각자 자기 토큰을 따로 보관하지만, **같은 ChatGPT Pro 계정으로 OAuth 하면 쿼터는 공유**됩니다 (양쪽 한 번씩 로그인 필요).
 
 > ⚠️ Hermes 를 ChatGPT 가 아닌 다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등)로 설정하면 그 때부터는 별도 결제가 발생하고 Codex Pro 와 무관해집니다. 기본 권장 구성은 두 런타임 모두 **"OpenAI Codex" provider** 입니다.
 
@@ -96,7 +96,7 @@ make setup-obsidian       # Obsidian Vault 디렉토리 + 앱 설치 안내
 make auth-codex           # codex login — 브라우저 OAuth
 
 # OUROBOROS_RUNTIME=hermes 일 때:
-make auth-hermes          # hermes auth add codex-oauth — device code OAuth
+make auth-hermes          # hermes auth add openai-codex --type oauth — 브라우저 OAuth
 ```
 
 이 단계들이 수동인 이유는 명확합니다. 브라우저 OAuth 와 GUI 앱 설치는 헤드리스로 못 합니다. Makefile 로 억지로 자동화하는 대신, 멈춰서 정확한 명령어를 안내합니다 — 토큰을 레포에 박을 일도 없습니다.
@@ -133,7 +133,7 @@ make dev                  # install-ouroboros → configure → verify
 | `make setup-obsidian` | Vault 디렉토리 배치 + 앱 설치 안내 |
 | `make configure` | 런타임·Vault 경로를 연결하는 config 생성 |
 | `make auth-codex` | Codex 인증 절차 안내 (`codex login`) |
-| `make auth-hermes` | Hermes Codex provider 인증 안내 (`hermes auth add codex-oauth`) |
+| `make auth-hermes` | Hermes openai-codex provider 인증 안내 (`hermes auth add openai-codex --type oauth`) |
 | `make verify` | 설치 상태 검증 |
 | `make doctor` | 흔한 문제 진단 |
 

@@ -304,14 +304,18 @@ run_with_tty() {
 }
 
 if [ "$FINAL_RUNTIME" = "hermes" ]; then
-  if [ -f "$HOME/.hermes/auth.json" ]; then
-    ok "Hermes 인증 이미 완료 (~/.hermes/auth.json)"
-  elif [ -f "$HOME/.codex/auth.json" ] && command -v hermes >/dev/null 2>&1; then
-    info "기존 codex 자격증명을 hermes 로 import"
-    hermes auth import codex-cli || warn "import 실패 — 'make auth-hermes' 참조"
+  # Hermes v0.14+ 기준: provider id 는 'openai-codex', type oauth.
+  # 'hermes auth import' 명령은 존재하지 않는다 (auth 서브: add/list/remove/reset/status/logout).
+  HERMES_HAS_OPENAI_CODEX=0
+  if command -v hermes >/dev/null 2>&1; then
+    hermes auth list 2>/dev/null | grep -q '^openai-codex' && HERMES_HAS_OPENAI_CODEX=1
+  fi
+
+  if [ "$HERMES_HAS_OPENAI_CODEX" = "1" ]; then
+    ok "Hermes openai-codex provider 인증 이미 완료"
   elif has_tty && command -v hermes >/dev/null 2>&1; then
-    say "Hermes 인증 시작 (device code — 브라우저가 열립니다)"
-    run_with_tty hermes auth add codex-oauth \
+    say "Hermes 인증 시작 (openai-codex OAuth — 브라우저가 열립니다)"
+    run_with_tty hermes auth add openai-codex --type oauth \
       || warn "인증 실패/취소 — 나중에 'make auth-hermes' 로 재시도"
   else
     warn "비대화 환경 — 인증을 직접 실행하세요: ${BOLD}make auth-hermes${RST}"
