@@ -2,6 +2,14 @@
 
 Hermes · Ouroboros · Codex · Obsidian 을 한 번의 `make` 로 배치하는 통합 설치 오케스트레이터.
 
+> **이 레포는 위 4개 도구의 fork/vendor 가 아닙니다.** 글루 코드(`init.sh`, `Makefile`, `scripts/*.sh`)만 들어 있고, 본체는 모두 공식 채널에서 받습니다:
+> - **Hermes CLI** → PyPI [`hermes-agent`](https://pypi.org/project/hermes-agent/) (by [NousResearch](https://github.com/NousResearch/hermes-agent))
+> - **Codex CLI** → npm [`@openai/codex`](https://www.npmjs.com/package/@openai/codex) (by OpenAI)
+> - **Ouroboros** → PyPI [`ouroboros-ai`](https://pypi.org/project/ouroboros-ai/)
+> - **Obsidian** → Homebrew cask `obsidian` (공식 .dmg 동일)
+>
+> 우리가 더하는 가치는 이 넷이 서로의 출력을 인식하도록 **config 를 한 곳에서 묶는 것**입니다 (`~/.wigtn-stack/stack.yaml`).
+
 ## 무엇을, 왜
 
 이 레포는 네 구성요소를 하나의 워크플로우로 묶습니다. 각자의 역할은 같은 층이 아니라 위아래로 포개집니다.
