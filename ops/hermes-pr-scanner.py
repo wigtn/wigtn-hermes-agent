@@ -522,10 +522,14 @@ def main():
         if tid:
             if model:
                 # 순서가 중요하다. 모델을 박고 나서 풀어준다.
-                set_model_override(tid, model)
-                unblock_task(tid)
-                log("  생성 %s  %s#%d  (문서 변경 -> %s)"
-                    % (tid, p["repo"], p["number"], model))
+                # 지정에 실패하면 풀지 않는다. 기본 모델로 새어나가는 것보다
+                # 막아두고 사람이 보는 편이 낫다.
+                if set_model_override(tid, model) and unblock_task(tid):
+                    log("  생성 %s  %s#%d  (문서 변경 -> %s)"
+                        % (tid, p["repo"], p["number"], model))
+                else:
+                    log("  경고: %s 모델 지정 실패로 blocked 유지 (%s#%d)"
+                        % (tid, p["repo"], p["number"]))
             else:
                 # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
                 # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.

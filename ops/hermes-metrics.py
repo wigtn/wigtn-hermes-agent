@@ -69,6 +69,7 @@ def collect():
         return ["# kanban.db 없음"]
 
     db = snapshot(KANBAN_DB)
+    conn = None
     try:
         conn = sqlite3.connect(db)
         conn.row_factory = sqlite3.Row
@@ -159,6 +160,9 @@ def collect():
 
         return out
     finally:
+        # 상주 서버라 스크레이프마다 연결을 닫지 않으면 FD 가 쌓인다.
+        if conn is not None:
+            conn.close()
         os.unlink(db)
 
 

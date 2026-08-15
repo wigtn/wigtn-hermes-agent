@@ -135,16 +135,24 @@ def handle_pull_request(payload):
     if not repo_path:
         return
 
-    tid = SC.create_task(repo, number, title, sha, url, False, repo_path)
-    if not tid:
-        return
-
+    # 모델을 먼저 정한다. 태스크를 만든 뒤에 넣으면 그 사이에 디스패처가
+    # 집어가 기본 모델로 돌아버린다. 스캐너와 같은 순서를 쓴다.
     detail = {"additions": pr.get("additions") or 0,
               "deletions": pr.get("deletions") or 0}
     model = SC.pick_model(token, repo, number, detail)
-    if model and SC.set_model_override(tid, model):
-        log("  생성 %s  %s#%s  action=%s  (문서 변경 -> %s)"
-            % (tid, repo, number, action, model))
+
+    tid = SC.create_task(repo, number, title, sha, url, False, repo_path,
+                         start_blocked=bool(model))
+    if not tid:
+        return
+
+    if model:
+        if SC.set_model_override(tid, model) and SC.unblock_task(tid):
+            log("  생성 %s  %s#%s  action=%s  (문서 변경 -> %s)"
+                % (tid, repo, number, action, model))
+        else:
+            log("  경고: %s 모델 지정 실패로 blocked 유지 (%s#%s)"
+                % (tid, repo, number))
     else:
         log("  생성 %s  %s#%s  action=%s" % (tid, repo, number, action))
 
