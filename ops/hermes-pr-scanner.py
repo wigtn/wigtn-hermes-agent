@@ -329,9 +329,13 @@ def announce_finished(announced, dry_run):
                 first = "%s %s" % ("✅" if r["status"] == "done" else "⏸", r["title"])
             if dry_run:
                 log("  [dry-run] 알림 예정: %s" % first[:100])
-            elif slack_post(first):
+                continue
+            # 전송에 성공했을 때만 기록한다. 실패하면 다음 주기에 다시 시도한다.
+            if slack_post(first):
                 sent += 1
-            announced.add(r["id"])
+                announced.add(r["id"])
+            else:
+                log("  알림 전송 실패, 다음 주기에 재시도: %s" % r["id"])
     finally:
         os.unlink(tmp.name)
     return announced, sent
