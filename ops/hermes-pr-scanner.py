@@ -18,6 +18,11 @@
 import argparse
 import json
 import os
+import shutil
+import sqlite3
+import tempfile
+import urllib.parse
+import urllib.request
 import subprocess
 import sys
 import time
@@ -33,6 +38,7 @@ GATEWAY_LABEL = os.environ.get("HERMES_GATEWAY_LABEL", "ai.hermes.gateway")
 # 알림을 받을 Slack 채널 ID. 비우면 알림을 보내지 않는다.
 ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
 # 토큰 파일. GH_TOKEN 환경변수가 있으면 그쪽이 우선한다.
+KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
 TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", os.path.join(HERMES_HOME, "gh_token"))
 LOG_PATH = os.path.join(LOG_DIR, "hermes-pr-scanner.log")
 STATE_PATH = os.path.join(HERMES_HOME, "pr-scanner-state.json")
@@ -125,27 +131,70 @@ def pr_detail(token, repo, number):
         return None
 
 
+MARKER = "<!-- hermes-review -->"
+
+
 def build_body(repo, number, title, sha, url):
-    return f"""wigtn/{repo} 의 PR #{number} 를 리뷰한다.
+    return f"""{ORG}/{repo} 의 PR #{number} 를 리뷰한다.
 
 - PR: {url}
 - 제목: {title}
 - 큐에 넣을 때의 head SHA: `{sha}`
 
-작업 순서:
-1. GitHub 에서 이 PR 의 현재 상태를 먼저 조회한다.
-   - 이미 MERGED 이거나 closed 면 재리뷰하지 말고, 병합 완료된 큐 항목으로 보고 그대로 완료 처리한다.
-   - 아직 열려 있는데 현재 head SHA 가 위 값과 다르면, 낡은 큐이므로 짧은 한국어 사유로 보류(block)한다.
-2. 그 외에는 `{SKILL}` 절차대로 리뷰한다. 변경된 코드를 직접 보고, 가능하면 검사를 실제로 실행한다.
-3. 같은 head SHA 에 대해 이미 남긴 리뷰가 있으면 중복으로 다시 달지 않는다.
-4. 리뷰 결과를 GitHub 코멘트로 남기고, 그 URL 을 확인한 뒤 칸반을 완료한다.
+## 1. 먼저 확인
 
-작성 규칙:
+GitHub 에서 이 PR 의 현재 상태를 조회한다.
+
+- 이미 MERGED 이거나 closed 면 재리뷰하지 말고 완료 처리한다.
+- 아직 열려 있는데 현재 head SHA 가 위 값과 다르면 낡은 큐이므로 짧은 한국어 사유로 보류한다.
+
+## 2. 리뷰
+
+github-code-review 절차대로 변경된 코드를 직접 보고, 가능하면 검사를 실제로 실행한다.
+
+## 3. 결과 게시 — 두 가지를 모두 한다
+
+### (a) 요약 코멘트는 하나만 유지하고 계속 수정한다
+
+같은 PR 을 여러 번 리뷰해도 코멘트가 쌓이면 안 된다.
+
+1. `gh api repos/{ORG}/{repo}/issues/{number}/comments --paginate` 로 기존 코멘트를 조회한다.
+2. 본문에 `{MARKER}` 가 들어 있고 작성자가 자신인 코멘트를 찾는다.
+3. 있으면 `gh api -X PATCH repos/{ORG}/{repo}/issues/comments/<id> -f body=@<파일>` 로 수정한다.
+4. 없을 때만 새로 만든다.
+5. 본문 첫 줄은 반드시 `{MARKER}` 로 시작한다. 그래야 다음 리뷰가 찾을 수 있다.
+
+요약에는 판정, 확인한 내용, 남은 문제, 다음 할 일, 검토한 head SHA 를 넣는다.
+
+### (b) 리뷰를 제출한다 — 판정과 인라인 코멘트
+
+`gh api repos/{ORG}/{repo}/pulls/{number}/reviews` 로 제출한다.
+
+- `commit_id` 는 검토한 head SHA
+- `event` 는 판정에 따라 정한다
+    - 문제 없음 → APPROVE
+    - 반드시 고쳐야 할 것이 있음 → REQUEST_CHANGES
+    - 참고 의견만 → COMMENT
+- `body` 는 한 줄 판정 요약. 자세한 내용은 (a) 에 있으므로 반복하지 않는다.
+- 지적할 지점이 있으면 `comments` 배열로 인라인 코멘트를 단다.
+  각 항목은 `path`, `line`, `body` 를 갖는다. `line` 은 diff 에 실제로 포함된 라인이어야 한다.
+
+자신이 PR 작성자면 APPROVE 가 거부된다. 그 경우 COMMENT 로 제출하고
+요약에 작성자와 리뷰 계정이 같아 승인 대신 코멘트로 남긴다고 적는다.
+
+## 4. 칸반 완료
+
+완료 요약의 첫 줄은 반드시 아래 한 문장으로 시작한다.
+
+`✅ [{repo}] PR #{number} <판정> — <요약 코멘트 URL>`
+
+`<판정>` 은 승인, 변경 요청, 의견 중 하나다.
+보류일 때는 `⏸ [{repo}] PR #{number} 리뷰 보류 — <짧은 사유>` 로 쓴다.
+
+## 규칙
+
 - GitHub 코멘트와 칸반 요약은 모두 쉬운 한국어로 쓴다.
-- 칸반 완료 요약의 첫 줄은 반드시 아래 형식 한 문장으로 시작한다.
-  `✅ [{repo}] PR #{number} 리뷰 완료 — <GitHub 코멘트 URL>`
-  보류일 때는 `⏸ [{repo}] PR #{number} 리뷰 보류 — <짧은 사유>`
-- 첫 줄 다음에 PR, 결과, 핵심 발견, 다음 할 일을 짧은 항목으로 덧붙인다.
+- 같은 head SHA 에 리뷰를 이미 제출했으면 중복 제출하지 않는다.
 """
 
 
@@ -216,20 +265,94 @@ def subscribe_slack(task_id):
     return r.returncode == 0
 
 
+def slack_post(text):
+    # 봇 토큰으로 직접 보낸다. 칸반 기본 알림은 태스크 제목만 실어
+    # 판정과 코멘트 URL 이 빠지기 때문이다.
+    if not ALERT_CHANNEL:
+        return False
+    token = os.environ.get("SLACK_BOT_TOKEN", "")
+    if not token:
+        try:
+            with open(os.path.join(HERMES_HOME, ".env"), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("SLACK_BOT_TOKEN="):
+                        token = line.split("=", 1)[1].strip().strip(chr(34)).strip(chr(39))
+                        break
+        except OSError:
+            pass
+    if not token:
+        return False
+    data = urllib.parse.urlencode({"channel": ALERT_CHANNEL, "text": text}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage", data=data,
+        headers={"Authorization": "Bearer " + token,
+                 "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode()).get("ok", False)
+    except Exception:
+        return False
+
+
+def announce_finished(announced, dry_run):
+    # 끝난 리뷰 태스크를 판정과 링크를 담아 알린다.
+    # 워커가 남긴 완료 요약의 첫 줄이 이미 원하는 형식이므로 그대로 쓴다.
+    if not os.path.exists(KANBAN_DB):
+        return announced, 0
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    shutil.copy2(KANBAN_DB, tmp.name)
+    sent = 0
+    try:
+        conn = sqlite3.connect(tmp.name)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, status, title FROM tasks "
+            "WHERE created_by = 'pr-scanner' AND status IN ('done', 'blocked')"
+        ).fetchall()
+        for r in rows:
+            if r["id"] in announced:
+                continue
+            ev = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? "
+                "AND kind IN ('completed', 'blocked', 'gave_up') "
+                "ORDER BY rowid DESC LIMIT 1", (r["id"],)).fetchone()
+            summary = ""
+            if ev and ev["payload"]:
+                try:
+                    summary = (json.loads(ev["payload"]).get("summary") or "").strip()
+                except (ValueError, AttributeError):
+                    summary = ""
+            first = summary.splitlines()[0] if summary else ""
+            if not first:
+                first = "%s %s" % ("✅" if r["status"] == "done" else "⏸", r["title"])
+            if dry_run:
+                log("  [dry-run] 알림 예정: %s" % first[:100])
+            elif slack_post(first):
+                sent += 1
+            announced.add(r["id"])
+    finally:
+        os.unlink(tmp.name)
+    return announced, sent
+
+
 def load_state():
     try:
         with open(STATE_PATH, encoding="utf-8") as f:
             d = json.load(f)
-        return set(d.get("keys", [])), d.get("watermark")
+        return (set(d.get("keys", [])), d.get("watermark"),
+                set(d.get("announced", [])))
     except (OSError, ValueError):
-        return set(), None
+        return set(), None, set()
 
 
-def save_state(keys, watermark):
+def save_state(keys, watermark, announced=()):
     try:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump({"keys": sorted(keys)[-2000:],
-                       "watermark": watermark}, f)
+                       "watermark": watermark,
+                       "announced": sorted(announced)[-2000:]}, f)
     except OSError:
         pass
 
@@ -250,7 +373,7 @@ def main():
     if not prs:
         return 0
 
-    seen, watermark = load_state()
+    seen, watermark, announced = load_state()
 
     # 기준 시각이 없으면 지금으로 잡고 끝낸다. 이미 열려 있던 PR 은
     # 의도적으로 남겨둔 것이므로 건드리지 않는다.
@@ -259,7 +382,7 @@ def main():
         if args.dry_run:
             log("[dry-run] 기준 시각을 %s 로 잡을 예정 (저장하지 않음)" % watermark)
         else:
-            save_state(seen, watermark)
+            save_state(seen, watermark, announced)
             log("기준 시각 설정: %s — 이후 새로 열린 PR 만 리뷰한다" % watermark)
         log("기존에 열려 있던 PR %d건은 대상에서 제외" % len(prs))
         return 0
@@ -293,16 +416,17 @@ def main():
             # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
-            ok = subscribe_slack(tid)
-            log("  생성 %s  %s#%d  slack구독=%s"
-                % (tid, p["repo"], p["number"], "OK" if ok else "실패"))
+            # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
+            # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
+            log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
             created += 1
             seen.add(key)
 
+    announced, sent = announce_finished(announced, args.dry_run)
     if not args.dry_run:
-        save_state(seen, watermark)
-    log("완료: 생성 %d · 초안 %d · 중복 %d · 기준시각이전 %d"
-        % (created, skipped_draft, skipped_seen, skipped_old))
+        save_state(seen, watermark, announced)
+    log("완료: 생성 %d · 알림 %d · 초안 %d · 중복 %d · 기준시각이전 %d"
+        % (created, sent, skipped_draft, skipped_seen, skipped_old))
     return 0
 
 
