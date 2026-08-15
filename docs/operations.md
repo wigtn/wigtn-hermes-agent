@@ -98,16 +98,13 @@ GitHub 코멘트를 남기고, 칸반 알림 구독을 통해 Slack 으로 결�
 세 스크립트는 표준 라이브러리만 씁니다. 별도 의존성이 없습니다.
 
 ```bash
-# 1) 스크립트 배치
-mkdir -p ~/hermes-ops/{logs,reviews,review-drafts}
-cp ops/*.py ~/hermes-ops/
-chmod +x ~/hermes-ops/*.py
-
-# 2) GitHub 토큰 (classic PAT 권장)
+# 1) GitHub 토큰 (classic PAT 권장)
 #    필요한 스코프: repo, workflow, read:org
 #    org webhook 까지 쓸 거라면 admin:org_hook 추가
 printf '%s' 'ghp_...' > ~/.hermes/gh_token
 chmod 600 ~/.hermes/gh_token
+
+# 2) 스크립트 배치 + launchd 등록 (아래 install.sh 가 전부 처리)
 ```
 
 ### 환경 변수
@@ -128,16 +125,17 @@ chmod 600 ~/.hermes/gh_token
 
 ### launchd 등록
 
-`ops/launchagents/` 의 템플릿에서 `__HOME__`, `__ORG__`, `__CHANNEL__` 을 채워
-`~/Library/LaunchAgents/` 에 두고 등록합니다.
+`ops/install.sh` 가 plist 를 생성해서 등록까지 합니다. 템플릿을 직접 손댈 필요는 없습니다.
 
 ```bash
-for f in hermes-watchdog hermes-worktree-reaper hermes-pr-scanner; do
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wigtn.$f.plist
-done
+GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
+
+# 되돌리기
+./ops/install.sh --uninstall
 ```
 
 주기는 워치독 2분, 스캐너 3분, 회수 매일 04:30 입니다.
+launchd 레이블 접두사는 `LAUNCHD_PREFIX` 로 바꿀 수 있습니다 (기본 `com.local`).
 
 > **주의** — 스캐너를 처음 등록하면 첫 실행에서 기준 시각만 기록하고 아무 태스크도 만들지
 > 않습니다. 이미 열려 있던 PR 을 건드리지 않기 위한 안전장치입니다. 의도적으로 기존 PR 까지

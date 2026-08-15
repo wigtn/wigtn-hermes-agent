@@ -258,8 +258,11 @@ def main():
     # 의도적으로 남겨둔 것이므로 건드리지 않는다.
     if not watermark:
         watermark = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_state(seen, watermark)
-        log("기준 시각 설정: %s — 이후 새로 열린 PR 만 리뷰한다" % watermark)
+        if args.dry_run:
+            log("[dry-run] 기준 시각을 %s 로 잡을 예정 (저장하지 않음)" % watermark)
+        else:
+            save_state(seen, watermark)
+            log("기준 시각 설정: %s — 이후 새로 열린 PR 만 리뷰한다" % watermark)
         log("기존에 열려 있던 PR %d건은 대상에서 제외" % len(prs))
         return 0
 
@@ -288,7 +291,8 @@ def main():
         tid = create_task(p["repo"], p["number"], p["title"], d["sha"],
                           d["url"], args.dry_run, repo_path)
         if args.dry_run:
-            seen.add(key)
+            # dry-run 은 상태를 남기지 않는다. 점검 후 실제 실행했을 때
+            # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
             ok = subscribe_slack(tid)
@@ -297,7 +301,8 @@ def main():
             created += 1
             seen.add(key)
 
-    save_state(seen, watermark)
+    if not args.dry_run:
+        save_state(seen, watermark)
     log("완료: 생성 %d · 초안 %d · 중복 %d · 기준시각이전 %d"
         % (created, skipped_draft, skipped_seen, skipped_old))
     return 0
