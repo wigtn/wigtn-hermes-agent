@@ -450,8 +450,7 @@ def main():
 
     prs = open_prs(token, args.limit)
     log("열린 PR %d건 (제외 목록 적용 후)" % len(prs))
-    if not prs:
-        return 0
+    # 열린 PR 이 없어도 여기서 끝내지 않는다. 완료 알림이 남아 있을 수 있다.
 
     seen, watermark, announced = load_state()
 
