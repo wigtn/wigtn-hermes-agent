@@ -1,140 +1,68 @@
-# wigtn-hermes-bootstrap
+# wigtn-hermes
 
-빈 Mac mini 에 **Hermes Agent** 를 한 줄로 깔고, **ChatGPT Pro 구독 쿼터**로 바로 동작시키는 부트스트랩.
+빈 Mac mini 에 **Hermes Agent** 를 깔고, 거기서 끝내지 않고 **계속 돌게** 만드는 글루 코드.
 
-> **이 레포는 Hermes Agent 의 fork 가 아닙니다.** 글루 코드(`init.sh`, `Makefile`, `scripts/*.sh`)만 들어 있고, Hermes 본체는 공식 채널에서 받습니다:
-> - **Hermes CLI** → PyPI [`hermes-agent`](https://pypi.org/project/hermes-agent/) (by [NousResearch](https://github.com/NousResearch/hermes-agent))
->
-> 우리가 더하는 가치는 **빈 Mac mini → 동작까지 한 줄**, 그리고 `openai-codex` provider 로 ChatGPT Pro OAuth 를 자동 트리거하는 것입니다.
+> **이 레포는 Hermes Agent 의 fork 가 아닙니다.** 글루 코드만 들어 있고 Hermes 본체는 공식 채널에서 받습니다.
+> **Hermes CLI** → PyPI [`hermes-agent`](https://pypi.org/project/hermes-agent/) (by [NousResearch](https://github.com/NousResearch/hermes-agent))
 
-## 설치 다음 — 운영
+레포가 다루는 것은 두 축입니다.
 
-`init.sh` 는 Hermes 를 **깔아서 돌아가게** 만듭니다. 그 다음 **계속 돌게** 만드는 부분은
-[`docs/operations.md`](docs/operations.md) 에 정리해 두었습니다.
-
-맥미니 한 대로 실제 운영하면서 겪은 것들입니다.
-
-- 게이트웨이가 살아 있는데 Slack 만 죽어 35시간 방치된 사고 — `KeepAlive` 로는 잡히지 않습니다
-- PR 리뷰 자동화가 12일간 조용히 멈춰 있던 일
-- 작업용 워크트리가 계속 쌓여 디스크를 먹던 문제
-
-대응으로 만든 세 가지가 `ops/` 에 있습니다. 표준 라이브러리만 쓰고 의존성이 없습니다.
-
-| 스크립트 | 주기 | 하는 일 |
+| | 무엇 | 어디 |
 |---|---|---|
-| `hermes-watchdog.py` | 2분 | 게이트웨이가 실제로 응답 가능한지 점검하고 필요하면 재시작 + Slack 보고 |
-| `hermes-pr-scanner.py` | 3분 | 조직의 새 PR 을 감지해 칸반 리뷰 태스크 생성 |
-| `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |
+| **설치** | 빈 Mac mini → 동작까지 한 줄. ChatGPT Pro 구독 쿼터로 바로 씁니다 | `init.sh`, `Makefile`, `scripts/` |
+| **운영** | 죽으면 되살리고, 쌓이면 치우고, PR 이 올라오면 자동으로 리뷰합니다 | `ops/`, [`docs/operations.md`](docs/operations.md) |
 
-```bash
-GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
-```
+설치는 한 번이지만 운영은 계속입니다. **두 번째 축이 이 레포의 무게 중심**입니다.
 
-## 무엇을, 왜
+---
 
-- **Hermes Agent** — 50+ provider 를 지원하는 self-improving 에이전트 셸. 영구 메모리(`~/.hermes/memories/`), 자동 학습되는 스킬, 비대화 자동화(`hermes chat -q "..."`) 가 기본 탑재.
-- **ChatGPT Pro 쿼터 연결** — Hermes 의 `openai-codex` provider 는 OpenAI Codex CLI 와 같은 OAuth 통로(ChatGPT 로그인)를 거쳐 Codex 모델을 호출합니다. 추가 결제 없음.
+# 1. 설치
 
-> ⚠️ Hermes 를 다른 provider (OpenRouter, Nous Portal, OpenAI API 키 등) 로 설정하면 그 때부터는 별도 결제가 발생합니다. 기본 권장 구성은 `openai-codex` provider 입니다.
+## 시나리오 A — 빈 Mac mini
 
-## 빠른 시작
-
-### 시나리오 A — 빈 Mac mini (Xcode CLT, Homebrew, Python 다 없음)
-
-**총 소요 시간 10~20분**, **사용자가 손 대는 횟수 3번.** 나머지는 전부 자동.
-
-#### STEP 0. macOS 초기 설정 (Apple 박스 개봉)
-
-```
-박스 개봉 → macOS 첫 부팅 → Apple ID 로그인 → Wi-Fi 연결
-Spotlight (⌘+Space) → "Terminal" → 터미널 열기
-```
-
-#### STEP 1. 한 줄 부트스트랩
+Xcode CLT, Homebrew, Python 아무것도 없는 상태에서 시작합니다.
+**총 10~20분, 사람이 손 대는 곳 3번.** 나머지는 전부 자동입니다.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wigtn/wigtn-hermes-agent/main/init.sh | bash
 ```
 
-#### STEP 2. init.sh 가 진행하는 6단계 + 손 댈 곳 3군데
+`init.sh` 가 도는 순서와 손 댈 지점입니다.
 
 ```
 [1/6] Xcode CLT 설치
-       ▼
-       ★ 손 댈 곳 1) GUI 다이얼로그 "Install" 클릭 + 설치 완료 대기 (5~10분)
-                   완료 후 터미널에서 Enter
+       ★ 손 댈 곳 1) GUI "Install" 클릭 + 완료 대기 (5~10분) → 터미널에서 Enter
 
 [2/6] Homebrew 설치
-       ▼
-       ★ 손 댈 곳 2) sudo 비밀번호 입력 (한 번)
-                   Apple Silicon 이면 /opt/homebrew 자동 PATH 등록
+       ★ 손 댈 곳 2) sudo 비밀번호 (한 번)
 
-[3/6] brew 패키지 (자동, 1~2분)
-       └─ python@3.12, git, pipx, jq, gettext
+[3/6] brew 패키지 — python@3.12, git, pipx, jq, gettext
+[4/6] git clone → ~/wigtn-hermes/
+[5/6] make install — preflight → install-hermes → verify
 
-[4/6] git clone (자동) → ~/wigtn-hermes/
-
-[5/6] make install (자동, 1~3분)
-       ├─ preflight        — python 3.12+, git, pipx 점검
-       ├─ install-hermes   — pipx install hermes-agent + postinstall
-       └─ verify           — 인증 빼고 전부 OK 떠야 정상
-
-[6/6] Hermes openai-codex provider 인증
-       ▼
-       ★ 손 댈 곳 3) 자동으로 OAuth 띄움 — 브라우저에서 ChatGPT Pro 로그인
-                   (hermes auth add openai-codex --type oauth)
+[6/6] openai-codex provider 인증
+       ★ 손 댈 곳 3) 브라우저에서 ChatGPT Pro 로그인
 ```
 
-#### STEP 3. 검증 + 첫 사용
+끝나면 확인합니다.
 
 ```bash
 cd ~/wigtn-hermes
-
-# 1) 전부 OK 인지 확인
-make verify
-# → hermes CLI, openai-codex provider 인증 모두 [OK]
-
-# 2) 첫 질문 — Pro 쿼터로 동작 확인
-hermes chat -q "say hello in one short sentence" -Q
-
-# 3) 인터랙티브 셸
-hermes
+make verify                                  # 전부 [OK]
+hermes chat -q "say hello in one sentence" -Q # 응답 오면 쿼터 연결 확인
+hermes                                       # 인터랙티브 셸
 ```
 
-#### 흔한 막힘 + 즉시 해결
-
-| 증상 | 원인 | 처방 |
-|---|---|---|
-| `Xcode CLT not found` | GUI 다이얼로그 X 눌러서 닫음 | `xcode-select --install` 다시 실행 |
-| `brew: command not found` (재로그인 후) | `.zprofile` 등록 안 됨 | `eval "$(/opt/homebrew/bin/brew shellenv)"` 그 후 새 터미널 |
-| `hermes: command not found` | pipx PATH 미적용 | `pipx ensurepath` 그 후 새 터미널 |
-| `hermes auth list` 에 openai-codex 없음 | OAuth 안 끝남 | `hermes auth add openai-codex --type oauth` 재시도 |
-| `chat -q "..."` 실행 시 `No inference provider configured` | 인증은 했지만 default provider 미선택 | `hermes model` → "OpenAI Codex" 선택 |
-| 다른 provider 가 잡혔음 | 실수로 다른 provider OAuth | `hermes auth remove <provider>` 후 재인증 |
-
-#### 한 화면 요약
-
-```
-1. 터미널 열기
-2. curl -fsSL .../init.sh | bash
-3. 손 댈 곳 3번:
-   ┌── (a) Xcode CLT GUI Install 클릭
-   ├── (b) sudo 비밀번호 (Homebrew)
-   └── (c) 브라우저에서 ChatGPT Pro 로그인
-4. make verify → 전부 [OK]
-5. hermes chat -q "..." -Q   또는   hermes
-```
-
-### 시나리오 B — 개발 환경 이미 갖춘 Mac (Python 3.12+, pipx 있음)
+## 시나리오 B — 개발 환경이 이미 있는 Mac
 
 ```bash
 git clone https://github.com/wigtn/wigtn-hermes-agent.git ~/wigtn-hermes
 cd ~/wigtn-hermes
-make install              # preflight → install-hermes → verify
-make auth-hermes          # 안내대로 OAuth (브라우저)
+make install
+make auth-hermes
 ```
 
-또는 더 짧게:
+익숙하면 더 짧게도 됩니다. 이 경우 레포의 부가가치는 `verify` 와 `doctor` 정도입니다.
 
 ```bash
 pipx install hermes-agent
@@ -142,9 +70,92 @@ hermes postinstall
 hermes auth add openai-codex --type oauth
 ```
 
-이 레포의 부가가치는 자동 인증 트리거 + verify/doctor 정도. 익숙한 개발자는 두 번째 형태로 충분.
+## 흔한 막힘
 
-## 타겟
+| 증상 | 원인 | 처방 |
+|---|---|---|
+| `Xcode CLT not found` | GUI 다이얼로그를 닫음 | `xcode-select --install` 다시 |
+| `brew: command not found` | `.zprofile` 미등록 | `eval "$(/opt/homebrew/bin/brew shellenv)"` 후 새 터미널 |
+| `hermes: command not found` | pipx PATH 미적용 | `pipx ensurepath` 후 새 터미널 |
+| `hermes auth list` 에 openai-codex 없음 | OAuth 미완료 | `hermes auth add openai-codex --type oauth` |
+| `No inference provider configured` | default provider 미선택 | `hermes model` → OpenAI Codex |
+| 다른 provider 가 잡힘 | 실수로 다른 OAuth | `hermes auth remove <provider>` 후 재인증 |
+
+## 비용
+
+`openai-codex` provider 는 OpenAI Codex CLI 와 같은 OAuth 통로를 거칩니다. **ChatGPT 구독 쿼터로 동작하며 추가 결제가 없습니다.**
+
+> ⚠️ 다른 provider (OpenRouter, Nous Portal, OpenAI API 키) 로 바꾸면 그때부터 별도 과금이 발생합니다.
+
+---
+
+# 2. 운영
+
+설치가 끝나면 Hermes 는 게이트웨이 프로세스 하나로 Slack, webhook, 칸반, cron 을 전부 물고 돕니다.
+문제는 **프로세스가 살아있는 채로 기능만 죽는 경우**입니다. launchd 의 `KeepAlive` 는 이것을 잡지 못합니다.
+
+실제로 겪은 것들입니다.
+
+| 증상 | 결과 |
+|---|---|
+| Slack 소켓이 끊긴 뒤 닫힌 세션으로 무한 재시도 | 프로세스는 정상, 응답만 35시간 중단 |
+| 상태 파일이 부팅 시점 값을 유지 | 죽은 동안에도 `connected` 로 보고 |
+| PR 리뷰 자동화가 조용히 멈춤 | 12일간 아무도 인지하지 못함 |
+| 작업 워크트리 누적 | 디스크 6.9GB 점유 |
+
+공통점은 **아무도 몰랐다**는 것입니다. 그래서 `ops/` 에 있는 것은 기능이 아니라 **지켜보는 장치**입니다.
+
+| 스크립트 | 주기 | 하는 일 |
+|---|---|---|
+| `hermes-watchdog.py` | 2분 | 게이트웨이가 실제로 응답 가능한지 점검, 필요하면 재시작하고 Slack 보고 |
+| `hermes-webhook-receiver.py` | 상주 | org 웹훅을 받아 PR 이 열리는 즉시 리뷰 태스크 생성 |
+| `hermes-pr-scanner.py` | 3분 | 조직의 새 PR 을 훑는 안전망. 수신기가 놓친 것을 주워감 |
+| `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |
+| `hermes-metrics.py` | 상주 | 리뷰 건수·판정·소요 시간을 Prometheus 로 노출 |
+
+표준 라이브러리만 씁니다. 추가 의존성이 없습니다.
+
+```bash
+GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
+
+# 되돌리기
+./ops/install.sh --uninstall
+```
+
+설계 근거, 환경 변수, 운영 중 확인법은 [`docs/operations.md`](docs/operations.md) 에 있습니다.
+
+---
+
+# 3. PR 자동 리뷰
+
+PR 이 올라오면 리뷰 코멘트가 자동으로 달립니다. 형식적인 요약이 아니라 **워크트리를 따로 떠서 빌드와 테스트를 실제로 실행한 뒤** 판정합니다.
+
+```
+PR 열림
+   ↓  org 웹훅 (즉시)  ·  스캐너 3분 주기 (안전망)
+칸반 리뷰 태스크 생성
+   ↓  디스패처가 워커 spawn, 전용 워크트리 체크아웃
+검사 실행 → 판정
+   ↓
+GitHub  요약 코멘트 1개 (재리뷰 시 수정) + Review API 판정 + 인라인 코멘트
+Slack   ✅ [레포] PR #번호 <판정> — <링크>
+```
+
+동작 방식에서 신경 쓴 것들입니다.
+
+- **소급 리뷰 방지** — 기준 시각을 처음 실행할 때 기록하고, 그 이후에 열린 PR 만 봅니다. 이미 열려 있던 PR 을 무더기로 리뷰하는 사고를 막습니다.
+- **코멘트 누적 방지** — 요약은 마커가 달린 코멘트 하나를 계속 수정합니다. 여섯 번 리뷰해도 코멘트는 하나입니다.
+- **중복 안전** — 웹훅과 스캐너를 같이 돌려도 칸반 idempotency key 가 같으면 태스크가 중복되지 않습니다.
+- **모델 라우팅** — 문서만 바뀐 작은 PR 은 가벼운 모델로 돌립니다. 코드가 한 줄이라도 섞이면 기본 모델을 씁니다.
+- **초안 제외** — draft PR 은 건너뜁니다. 리뷰받고 싶지 않으면 draft 로 열면 됩니다.
+
+전제 조건은 GitHub 토큰(classic PAT)입니다. 필요한 스코프는 `repo`, `workflow`, `read:org` 이고, org 웹훅까지 쓰려면 `admin:org_hook` 을 더합니다.
+
+---
+
+# 참고
+
+## make 타겟
 
 | 타겟 | 설명 |
 |---|---|
@@ -155,47 +166,27 @@ hermes auth add openai-codex --type oauth
 | `make verify` | 설치 상태 검증 |
 | `make doctor` | 문제 진단 + 해결책 제시 |
 
-## 검증된 흐름 (이 레포에서 직접 돌려본 결과)
-
-```bash
-make preflight        # python 3.12+ / git / pipx / 디스크 모두 [OK]
-make install-hermes   # 이미 설치되어 있으면 멱등 (postinstall 만 재실행)
-make verify           # 인증 안 했으면 [MISS] hermes 미인증 으로 종료
-make doctor           # MISS 항목별 정확한 해결 가이드 출력
-make auth-hermes      # 안내만 — 실제 OAuth 명령은 사람이 직접
-hermes auth add openai-codex --type oauth   # ★ 브라우저 OAuth (1회)
-hermes chat -q "hello" -Q                   # 응답 받으면 ChatGPT Pro 쿼터 연결 확인
-```
-
-## 환경 변수 (.env)
-
-```bash
-# 현재는 추가 설정 없이 동작합니다.
-# .env 는 미래 확장 (Hermes 환경 override 등) 여지로 둡니다.
-```
-
-`.env` 파일이 없어도 무관. `.env.example` 참조.
-
 ## 디렉토리
 
 ```
 wigtn-hermes-agent/
-├── init.sh               빈 Mac mini 한 줄 부트스트랩 (curl|bash)
-├── Makefile              5개 타겟 오케스트레이션
-├── .env.example          (거의 비어 있음 — 향후 확장용)
+├── init.sh                          빈 Mac mini 한 줄 부트스트랩 (curl|bash)
+├── Makefile                         설치 타겟 오케스트레이션
 ├── scripts/
-│   ├── preflight.sh      python/git/pipx 점검
-│   ├── install_hermes.sh pipx install hermes-agent + postinstall
-│   └── verify.sh         hermes 인증 검증 (+ --doctor 진단 모드)
-├── ops/                  운영 (day-2) — 설치 이후 계속 돌게 만드는 부분
-│   ├── install.sh        운영 스크립트 launchd 등록
-│   ├── hermes-watchdog.py         게이트웨이 생존 감시 + 자동 복구
-│   ├── hermes-pr-scanner.py       새 PR 감지 → 칸반 리뷰 태스크
-│   ├── hermes-worktree-reaper.py  병합된 PR 의 워크트리 회수
-│   └── alertmanager.example.yml   Slack 알림 설정 예시
+│   ├── preflight.sh                 python/git/pipx 점검
+│   ├── install_hermes.sh            pipx install hermes-agent + postinstall
+│   └── verify.sh                    인증 검증 (+ --doctor 진단 모드)
+├── ops/                             운영 — 설치 이후 계속 돌게 만드는 부분
+│   ├── install.sh                   운영 스크립트 launchd 등록/해제
+│   ├── hermes-watchdog.py           게이트웨이 생존 감시 + 자동 복구
+│   ├── hermes-webhook-receiver.py   org 웹훅 수신 → 리뷰 태스크
+│   ├── hermes-pr-scanner.py         새 PR 폴링 (안전망)
+│   ├── hermes-worktree-reaper.py    병합된 PR 의 워크트리 회수
+│   ├── hermes-metrics.py            리뷰 실적 Prometheus 노출
+│   └── alertmanager.example.yml     Slack 알림 설정 예시
 ├── docs/
-│   └── operations.md     운영 가이드
-└── README.md             이 파일
+│   └── operations.md                운영 가이드
+└── README.md                        이 파일
 ```
 
 설치 후 사용자 머신:
@@ -206,6 +197,11 @@ wigtn-hermes-agent/
 ~/.local/bin/hermes       Hermes CLI 바이너리 (pipx)
 ~/hermes-ops/             운영 스크립트 · 로그 · 리뷰용 클론
 ```
+
+## 환경 변수
+
+설치 단계(`.env`)에는 필수 항목이 없습니다. 운영 단계의 환경 변수는
+[`docs/operations.md`](docs/operations.md#환경-변수) 를 참고하세요.
 
 ## 라이선스
 
