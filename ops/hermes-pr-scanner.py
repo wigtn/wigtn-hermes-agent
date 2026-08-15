@@ -270,6 +270,15 @@ def pick_model(token, repo, number, detail):
     return LIGHT_MODEL
 
 
+def unblock_task(task_id):
+    """모델 확정 후 큐에 풀어준다."""
+    r = run([HERMES_BIN, "kanban", "unblock", task_id], timeout=60)
+    if r.returncode != 0:
+        log("  unblock 실패 %s: %s" % (task_id, r.stderr.strip()[:120]))
+        return False
+    return True
+
+
 def set_model_override(task_id, model):
     """디스패처가 워커를 띄울 때 -m <model> 로 넘겨준다."""
     try:
@@ -284,7 +293,8 @@ def set_model_override(task_id, model):
         return False
 
 
-def create_task(repo, number, title, sha, url, dry_run, repo_path=None):
+def create_task(repo, number, title, sha, url, dry_run, repo_path=None,
+                start_blocked=False):
     key = "%s-pr-review:%d:%s" % (repo, number, sha)
     task_title = "[%s PR review] #%d %s (%s)" % (repo, number, title, sha)
     if dry_run:
@@ -300,7 +310,11 @@ def create_task(repo, number, title, sha, url, dry_run, repo_path=None):
              "--skill", SKILL,
              "--idempotency-key", key,
              "--created-by", "pr-scanner",
-             "--json"], timeout=180)
+             "--json"]
+            # 모델을 지정할 태스크는 blocked 로 만든다. 디스패처가 모델이
+            # 확정되기 전에 집어가면 기본 모델로 돌아버리기 때문이다.
+            + (["--initial-status", "blocked"] if start_blocked else []),
+            timeout=180)
     if r.returncode != 0:
         log("  생성 실패 %s#%d: %s" % (repo, number, r.stderr.strip()[:160]))
         return None
@@ -464,6 +478,13 @@ def main():
             save_state(seen, watermark, announced)
             log("기준 시각 설정: %s — 이후 새로 열린 PR 만 리뷰한다" % watermark)
         log("기존에 열려 있던 PR %d건은 대상에서 제외" % len(prs))
+        # 초기화 경로에서도 알림은 계속 보낸다. 상태 파일이 지워졌을 때
+        # 이미 끝난 리뷰의 알림이 영영 누락되면 안 된다.
+        announced, sent = announce_finished(announced, args.dry_run)
+        if not args.dry_run:
+            save_state(seen, watermark, announced)
+        if sent:
+            log("알림 %d건 발송" % sent)
         return 0
 
     created = skipped_draft = skipped_seen = skipped_old = 0
@@ -488,15 +509,21 @@ def main():
             repo_path = ensure_repo(token, p["repo"])
             if not repo_path:
                 continue
+        # 모델을 먼저 정한다. 지정할 것이 있으면 blocked 로 만들어
+        # 디스패처가 모델 확정 전에 집어가지 못하게 한다.
+        model = pick_model(token, p["repo"], p["number"], d) if not args.dry_run else None
         tid = create_task(p["repo"], p["number"], p["title"], d["sha"],
-                          d["url"], args.dry_run, repo_path)
+                          d["url"], args.dry_run, repo_path,
+                          start_blocked=bool(model))
         if args.dry_run:
             # dry-run 은 상태를 남기지 않는다. 점검 후 실제 실행했을 때
             # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
-            model = pick_model(token, p["repo"], p["number"], d)
-            if model and set_model_override(tid, model):
+            if model:
+                # 순서가 중요하다. 모델을 박고 나서 풀어준다.
+                set_model_override(tid, model)
+                unblock_task(tid)
                 log("  생성 %s  %s#%d  (문서 변경 -> %s)"
                     % (tid, p["repo"], p["number"], model))
             else:
