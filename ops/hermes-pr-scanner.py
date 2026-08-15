@@ -32,7 +32,8 @@ GH = os.environ.get("GH_BIN", "/opt/homebrew/bin/gh")
 GATEWAY_LABEL = os.environ.get("HERMES_GATEWAY_LABEL", "ai.hermes.gateway")
 # 알림을 받을 Slack 채널 ID. 비우면 알림을 보내지 않는다.
 ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
-PLIST = os.path.join(HOME, "Library", "LaunchAgents", "ai.hermes.gateway.plist")
+# 토큰 파일. GH_TOKEN 환경변수가 있으면 그쪽이 우선한다.
+TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", os.path.join(HERMES_HOME, "gh_token"))
 LOG_PATH = os.path.join(LOG_DIR, "hermes-pr-scanner.log")
 STATE_PATH = os.path.join(HERMES_HOME, "pr-scanner-state.json")
 
@@ -67,18 +68,15 @@ def log(msg):
 
 
 def gh_token():
-    """게이트웨이와 같은 팀 계정 토큰을 쓴다."""
+    # 우선순위: GH_TOKEN 환경변수 -> 토큰 파일
     tok = os.environ.get("GH_TOKEN")
     if tok:
-        return tok
+        return tok.strip()
     try:
-        import plistlib
-        with open(PLIST, "rb") as f:
-            d = plistlib.load(f)
-        return d.get("EnvironmentVariables", {}).get("GH_TOKEN")
-    except Exception:
-        return None
-
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 def run(args, env_extra=None, timeout=120):
     env = dict(os.environ)
@@ -244,7 +242,7 @@ def main():
 
     token = gh_token()
     if not token:
-        log("GH_TOKEN 을 못 읽어 중단")
+        log("GitHub 토큰을 못 읽어 중단. GH_TOKEN 환경변수 또는 %s 를 확인하세요" % TOKEN_FILE)
         return 1
 
     prs = open_prs(token, args.limit)

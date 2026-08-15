@@ -28,6 +28,15 @@ DENYLIST="${HERMES_PR_DENYLIST:-}"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes || echo hermes)}"
 GH_BIN="${GH_BIN:-$(command -v gh || echo /opt/homebrew/bin/gh)}"
 
+TOKEN_FILE="${GH_TOKEN_FILE:-${HERMES_HOME:-$HOME/.hermes}/gh_token}"
+if [ ! -s "$TOKEN_FILE" ] && [ -z "${GH_TOKEN:-}" ]; then
+  echo "경고: GitHub 토큰이 없습니다."
+  echo "  $TOKEN_FILE 에 classic PAT 를 넣으세요 (스코프: repo, workflow, read:org)"
+  echo "    printf '%s' 'ghp_...' > $TOKEN_FILE && chmod 600 $TOKEN_FILE"
+  echo "  토큰 없이도 등록은 되지만 스캐너는 아무 PR 도 조회하지 못합니다."
+  echo
+fi
+
 mkdir -p "$OPS_DIR"/{logs,reviews,review-drafts} "$LA_DIR"
 
 for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py; do
@@ -68,6 +77,7 @@ for j in "${JOBS[@]}"; do
     <key>GITHUB_ORG</key><string>$GITHUB_ORG</string>
     <key>ALERT_CHANNEL</key><string>$ALERT_CHANNEL</string>
     <key>HERMES_PR_DENYLIST</key><string>$DENYLIST</string>
+    <key>GH_TOKEN_FILE</key><string>$TOKEN_FILE</string>
   </dict>
   $(schedule_for "$j")
   <key>StandardOutPath</key><string>$OPS_DIR/logs/$j.out.log</string>
