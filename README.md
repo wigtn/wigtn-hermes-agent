@@ -7,6 +7,29 @@
 >
 > 우리가 더하는 가치는 **빈 Mac mini → 동작까지 한 줄**, 그리고 `openai-codex` provider 로 ChatGPT Pro OAuth 를 자동 트리거하는 것입니다.
 
+## 설치 다음 — 운영
+
+`init.sh` 는 Hermes 를 **깔아서 돌아가게** 만듭니다. 그 다음 **계속 돌게** 만드는 부분은
+[`docs/operations.md`](docs/operations.md) 에 정리해 두었습니다.
+
+맥미니 한 대로 실제 운영하면서 겪은 것들입니다.
+
+- 게이트웨이가 살아 있는데 Slack 만 죽어 35시간 방치된 사고 — `KeepAlive` 로는 잡히지 않습니다
+- PR 리뷰 자동화가 12일간 조용히 멈춰 있던 일
+- 작업용 워크트리가 계속 쌓여 디스크를 먹던 문제
+
+대응으로 만든 세 가지가 `ops/` 에 있습니다. 표준 라이브러리만 쓰고 의존성이 없습니다.
+
+| 스크립트 | 주기 | 하는 일 |
+|---|---|---|
+| `hermes-watchdog.py` | 2분 | 게이트웨이가 실제로 응답 가능한지 점검하고 필요하면 재시작 + Slack 보고 |
+| `hermes-pr-scanner.py` | 3분 | 조직의 새 PR 을 감지해 칸반 리뷰 태스크 생성 |
+| `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |
+
+```bash
+GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
+```
+
 ## 무엇을, 왜
 
 - **Hermes Agent** — 50+ provider 를 지원하는 self-improving 에이전트 셸. 영구 메모리(`~/.hermes/memories/`), 자동 학습되는 스킬, 비대화 자동화(`hermes chat -q "..."`) 가 기본 탑재.
@@ -164,6 +187,14 @@ wigtn-hermes-agent/
 │   ├── preflight.sh      python/git/pipx 점검
 │   ├── install_hermes.sh pipx install hermes-agent + postinstall
 │   └── verify.sh         hermes 인증 검증 (+ --doctor 진단 모드)
+├── ops/                  운영 (day-2) — 설치 이후 계속 돌게 만드는 부분
+│   ├── install.sh        운영 스크립트 launchd 등록
+│   ├── hermes-watchdog.py         게이트웨이 생존 감시 + 자동 복구
+│   ├── hermes-pr-scanner.py       새 PR 감지 → 칸반 리뷰 태스크
+│   ├── hermes-worktree-reaper.py  병합된 PR 의 워크트리 회수
+│   └── alertmanager.example.yml   Slack 알림 설정 예시
+├── docs/
+│   └── operations.md     운영 가이드
 └── README.md             이 파일
 ```
 
@@ -173,6 +204,7 @@ wigtn-hermes-agent/
 ~/wigtn-hermes/           이 레포 (init.sh 가 자동 clone)
 ~/.hermes/                Hermes 데이터 (memories, sessions, skills, hooks)
 ~/.local/bin/hermes       Hermes CLI 바이너리 (pipx)
+~/hermes-ops/             운영 스크립트 · 로그 · 리뷰용 클론
 ```
 
 ## 라이선스

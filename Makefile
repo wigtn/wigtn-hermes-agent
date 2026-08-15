@@ -21,7 +21,10 @@ BOLD := $(shell tput bold 2>/dev/null)
 DIM  := $(shell tput dim 2>/dev/null)
 RST  := $(shell tput sgr0 2>/dev/null)
 
-.PHONY: help install preflight install-hermes auth-hermes verify doctor clean
+.PHONY: all help install preflight install-hermes auth-hermes verify doctor clean
+
+## all: 기본 타겟 — install 과 동일 (CI 가 make -n all 을 부른다)
+all: install
 
 ## help: 사용 가능한 타겟 목록을 보여준다
 help:

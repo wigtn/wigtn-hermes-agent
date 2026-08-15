@@ -1,0 +1,36 @@
+# Alertmanager 를 Slack 으로 보내는 설정 예시.
+#
+# Incoming Webhook URL 을 새로 발급받지 않고, 이미 쓰고 있는 Slack 봇 토큰으로
+# chat.postMessage 를 호출합니다. 채널을 이름 대신 ID 로 지정할 수 있어 편합니다.
+#
+# 토큰은 별도 파일로 분리하고 컨테이너에 read-only 로 마운트하세요.
+#   printf '%s' 'xoxb-...' > alertmanager/slack_token
+#   chmod 644 alertmanager/slack_token     # 컨테이너가 nobody 로 돌면 읽기 권한 필요
+#
+# docker-compose 마운트:
+#   - ./alertmanager/slack_token:/etc/alertmanager/slack_token:ro
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "slack"
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+receivers:
+  - name: "slack"
+    slack_configs:
+      - api_url: https://slack.com/api/chat.postMessage
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/slack_token
+        channel: "C0000000000" # 알림을 받을 채널 ID
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:red_circle:{{ else }}:large_green_circle:{{ end }} {{ .Status | toUpper }} · {{ .CommonLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ if .Annotations.description }}
+          {{ .Annotations.description }}{{ end }}
+          {{ end }}'
