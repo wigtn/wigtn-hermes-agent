@@ -11,7 +11,7 @@ set -euo pipefail
 OPS_DIR="${HERMES_OPS_DIR:-$HOME/hermes-ops}"
 LA_DIR="$HOME/Library/LaunchAgents"
 PREFIX="${LAUNCHD_PREFIX:-com.local}"
-JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper)
+JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-metrics hermes-webhook-receiver)
 
 if [ "${1:-}" = "--uninstall" ]; then
   for j in "${JOBS[@]}"; do
@@ -39,7 +39,8 @@ fi
 
 mkdir -p "$OPS_DIR"/{logs,reviews,review-drafts} "$LA_DIR"
 
-for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py; do
+for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py \
+         hermes-metrics.py hermes-webhook-receiver.py; do
   install -m 0755 "$(dirname "$0")/$f" "$OPS_DIR/$f"
 done
 echo "스크립트 배치: $OPS_DIR"
@@ -50,6 +51,9 @@ schedule_for() {
     hermes-watchdog)        echo "<key>StartInterval</key><integer>120</integer>" ;;
     hermes-pr-scanner)      echo "<key>StartInterval</key><integer>180</integer>" ;;
     hermes-worktree-reaper) echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>" ;;
+    hermes-metrics|hermes-webhook-receiver)
+      # 주기 실행이 아니라 상주한다. 죽으면 launchd 가 되살린다.
+      echo "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>" ;;
   esac
 }
 
@@ -78,6 +82,9 @@ for j in "${JOBS[@]}"; do
     <key>ALERT_CHANNEL</key><string>$ALERT_CHANNEL</string>
     <key>HERMES_PR_DENYLIST</key><string>$DENYLIST</string>
     <key>GH_TOKEN_FILE</key><string>$TOKEN_FILE</string>
+    <key>HERMES_LIGHT_MODEL</key><string>${HERMES_LIGHT_MODEL:-}</string>
+    <key>HERMES_LIGHT_MAX_CHANGES</key><string>${HERMES_LIGHT_MAX_CHANGES:-200}</string>
+    <key>WEBHOOK_SECRET_FILE</key><string>${WEBHOOK_SECRET_FILE:-${HERMES_HOME:-$HOME/.hermes}/webhook_secret}</string>
   </dict>
   $(schedule_for "$j")
   <key>StandardOutPath</key><string>$OPS_DIR/logs/$j.out.log</string>

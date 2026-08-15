@@ -91,6 +91,47 @@ webhook 세션이 도구를 받지 못하는 환경에서도 동작합니다.
 리뷰 자체는 칸반 워커가 합니다. 워커는 워크트리에서 빌드와 테스트를 실제로 실행한 뒤
 GitHub 코멘트를 남기고, 칸반 알림 구독을 통해 Slack 으로 결과가 전달됩니다.
 
+### 4. 웹훅 수신기 — `ops/hermes-webhook-receiver.py`
+
+org 웹훅을 받아 PR 이 열리는 즉시 리뷰 태스크를 만듭니다. 스캐너의 3분 지연이 사라집니다.
+
+태스크 생성 로직은 스캐너의 것을 그대로 불러 씁니다. 규칙이 두 곳으로 갈라지면 언젠가
+반드시 어긋나기 때문입니다. 둘을 같이 돌려도 안전합니다. 칸반의 idempotency key 가 같으면
+태스크가 중복 생성되지 않으므로, **수신기가 놓친 이벤트는 스캐너가 3분 안에 주워갑니다.**
+수신기를 즉시성, 스캐너를 안전망으로 두는 구성입니다.
+
+- HMAC 서명을 검증합니다. 시크릿이 없으면 요청을 거부합니다.
+- 같은 delivery ID 를 1시간 안에 다시 받으면 무시합니다.
+- GitHub 은 10초 안에 응답을 기대하므로 202 를 먼저 주고 처리는 뒤로 넘깁니다.
+- 레포 하나하나에 웹훅을 걸 필요가 없고, 새로 만든 레포도 자동으로 포함됩니다.
+
+org 웹훅에는 `admin:org_hook` 스코프가 필요합니다.
+
+### 5. 지표 — `ops/hermes-metrics.py`
+
+칸반의 리뷰 실적을 Prometheus 형식으로 내보냅니다. 로그를 뒤지지 않고
+"이번 주 몇 건", "평균 얼마나", "보류 비율" 을 바로 볼 수 있습니다.
+
+| 지표 | 내용 |
+|---|---|
+| `hermes_pr_review_tasks` | 레포별 · 상태별 태스크 수 |
+| `hermes_pr_review_verdicts` | 판정별 누계 (승인 / 변경 요청 / 의견) |
+| `hermes_pr_review_running` | 실행 중인 워커 수 |
+| `hermes_pr_review_queued` | 대기 중인 태스크 수 |
+| `hermes_pr_review_duration_seconds` | 리뷰 소요 시간 (중앙값 · p90) |
+| `hermes_pr_review_last_completed_age_seconds` | 마지막 완료 이후 경과 |
+
+마지막 지표가 유용합니다. 값이 계속 커지면 파이프라인이 멈춘 것입니다.
+
+### 모델 라우팅
+
+문서만 바뀌고 규모가 작은 PR 은 가벼운 모델로 돌립니다. 판단 근거를 좁게 잡아
+코드가 한 줄이라도 섞이면 기본 모델을 씁니다. 리뷰 품질을 아끼자고 놓치는 것보다
+한도를 더 쓰는 편이 낫기 때문입니다.
+
+- `HERMES_LIGHT_MODEL` 을 비우면 라우팅하지 않습니다.
+- `HERMES_LIGHT_MAX_CHANGES` 로 규모 기준을 바꿉니다 (기본 200줄).
+
 ---
 
 ## 설치
@@ -121,6 +162,11 @@ chmod 600 ~/.hermes/gh_token
 | `HERMES_PR_DENYLIST` | (없음) | 리뷰에서 뺄 레포. 쉼표 구분 |
 | `GH_TOKEN` / `GH_TOKEN_FILE` | `~/.hermes/gh_token` | GitHub 인증 |
 | `GH_BIN` | `/opt/homebrew/bin/gh` | gh CLI 경로 |
+| `HERMES_LIGHT_MODEL` | (없음) | 가벼운 변경에 쓸 모델. 비우면 라우팅 안 함 |
+| `HERMES_LIGHT_MAX_CHANGES` | `200` | 가벼운 변경으로 볼 최대 변경 줄 수 |
+| `WEBHOOK_SECRET_FILE` | `~/.hermes/webhook_secret` | org 웹훅 HMAC 시크릿 |
+| `WEBHOOK_PORT` | `8645` | 수신기 포트 |
+| `METRICS_PORT` | `10104` | 지표 서버 포트 |
 | `HERMES_GATEWAY_LABEL` | `ai.hermes.gateway` | 게이트웨이 launchd 레이블 |
 
 ### launchd 등록
