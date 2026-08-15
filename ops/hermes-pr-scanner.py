@@ -18,7 +18,6 @@
 import argparse
 import json
 import os
-import shutil
 import sqlite3
 import tempfile
 import urllib.parse
@@ -319,6 +318,26 @@ def subscribe_slack(task_id):
     return r.returncode == 0
 
 
+def db_snapshot(path):
+    """WAL 을 반영한 일관된 사본을 만든다.
+
+    파일 복사로는 -wal 에 있는 최근 커밋이 빠진다. backup() 은 SQLite 가
+    직접 일관된 상태를 떠 주므로 워커가 쓰는 중이어도 안전하다.
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    src = sqlite3.connect(path, timeout=15)
+    try:
+        dst = sqlite3.connect(tmp.name)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return tmp.name
+
+
 def slack_post(text):
     # 봇 토큰으로 직접 보낸다. 칸반 기본 알림은 태스크 제목만 실어
     # 판정과 코멘트 URL 이 빠지기 때문이다.
@@ -354,12 +373,15 @@ def announce_finished(announced, dry_run):
     # 워커가 남긴 완료 요약의 첫 줄이 이미 원하는 형식이므로 그대로 쓴다.
     if not os.path.exists(KANBAN_DB):
         return announced, 0
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    shutil.copy2(KANBAN_DB, tmp.name)
+    try:
+        db = db_snapshot(KANBAN_DB)
+    except sqlite3.Error as e:
+        # 스냅샷 실패로 스캔 전체를 중단시키지 않는다. 다음 주기에 다시 시도한다.
+        log("  칸반 스냅샷 실패, 이번 주기 알림 건너뜀: %s" % e)
+        return announced, 0
     sent = 0
     try:
-        conn = sqlite3.connect(tmp.name)
+        conn = sqlite3.connect(db)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, status, title FROM tasks "
@@ -391,7 +413,7 @@ def announce_finished(announced, dry_run):
             else:
                 log("  알림 전송 실패, 다음 주기에 재시도: %s" % r["id"])
     finally:
-        os.unlink(tmp.name)
+        os.unlink(db)
     return announced, sent
 
 

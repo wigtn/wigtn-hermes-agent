@@ -17,7 +17,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -42,10 +41,22 @@ VERDICT_MAP = {
 
 
 def snapshot(path):
-    """읽는 동안 워커가 쓰고 있을 수 있으므로 사본을 뜬다."""
+    """WAL 을 반영한 일관된 사본을 만든다.
+
+    파일 복사로는 -wal 에 있는 최근 커밋이 빠져 지표가 과거 상태로 남는다.
+    backup() 은 SQLite 가 직접 일관된 상태를 떠 주므로 워커가 쓰는 중이어도 안전하다.
+    """
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
-    shutil.copy2(path, tmp.name)
+    src = sqlite3.connect(path, timeout=15)
+    try:
+        dst = sqlite3.connect(tmp.name)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
     return tmp.name
 
 
