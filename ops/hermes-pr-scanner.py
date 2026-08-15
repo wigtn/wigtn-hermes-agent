@@ -39,6 +39,9 @@ GATEWAY_LABEL = os.environ.get("HERMES_GATEWAY_LABEL", "ai.hermes.gateway")
 ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
 # 토큰 파일. GH_TOKEN 환경변수가 있으면 그쪽이 우선한다.
 KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
+# 가벼운 변경에 쓸 모델. 비우면 라우팅하지 않고 기본 모델을 쓴다.
+LIGHT_MODEL = os.environ.get("HERMES_LIGHT_MODEL", "")
+LIGHT_MAX_CHANGES = int(os.environ.get("HERMES_LIGHT_MAX_CHANGES", "200"))
 TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", os.path.join(HERMES_HOME, "gh_token"))
 LOG_PATH = os.path.join(LOG_DIR, "hermes-pr-scanner.log")
 STATE_PATH = os.path.join(HERMES_HOME, "pr-scanner-state.json")
@@ -121,7 +124,9 @@ def open_prs(token, limit):
 
 def pr_detail(token, repo, number):
     r = run([GH, "api", "repos/%s/%s/pulls/%d" % (ORG, repo, number),
-             "--jq", "{sha: .head.sha, draft: .draft, state: .state, url: .html_url}"],
+             "--jq", "{sha: .head.sha, draft: .draft, state: .state, "
+                      "url: .html_url, additions: .additions, "
+                      "deletions: .deletions, changed: .changed_files}"],
             {"GH_TOKEN": token})
     if r.returncode != 0:
         return None
@@ -229,6 +234,55 @@ def ensure_repo(token, repo):
         return None
     log("  클론 완료: %s" % path)
     return path
+
+
+# 문서/설정으로 취급할 확장자. 이것만 바뀌었고 규모가 작으면 가벼운 모델로 돌린다.
+DOC_EXT = {".md", ".txt", ".rst", ".adoc", ".yml", ".yaml",
+           ".json", ".toml", ".cfg", ".ini"}
+DOC_NAMES = {"LICENSE", ".gitignore", ".gitattributes", ".editorconfig"}
+
+
+def pick_model(token, repo, number, detail):
+    """가벼운 변경이면 가벼운 모델 이름을, 아니면 None 을 준다.
+
+    판단 근거를 좁게 잡는다. 코드가 한 줄이라도 섞이면 기본 모델을 쓴다.
+    리뷰 품질을 아끼자고 놓치는 것보다 한도를 더 쓰는 편이 낫다.
+    """
+    if not LIGHT_MODEL:
+        return None
+    size = (detail.get("additions") or 0) + (detail.get("deletions") or 0)
+    if size > LIGHT_MAX_CHANGES:
+        return None
+    r = run([GH, "api", "repos/%s/%s/pulls/%d/files" % (ORG, repo, number),
+             "--paginate", "--jq", "[.[].filename]"], {"GH_TOKEN": token})
+    if r.returncode != 0:
+        return None
+    try:
+        files = json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not files:
+        return None
+    for f in files:
+        base = os.path.basename(f)
+        ext = os.path.splitext(base)[1].lower()
+        if ext not in DOC_EXT and base not in DOC_NAMES:
+            return None
+    return LIGHT_MODEL
+
+
+def set_model_override(task_id, model):
+    """디스패처가 워커를 띄울 때 -m <model> 로 넘겨준다."""
+    try:
+        conn = sqlite3.connect(KANBAN_DB, timeout=10)
+        with conn:
+            conn.execute("UPDATE tasks SET model_override = ? WHERE id = ?",
+                         (model, task_id))
+        conn.close()
+        return True
+    except sqlite3.Error as e:
+        log("  모델 지정 실패 %s: %s" % (task_id, e))
+        return False
 
 
 def create_task(repo, number, title, sha, url, dry_run, repo_path=None):
@@ -420,9 +474,14 @@ def main():
             # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
-            # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
-            # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
-            log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
+            model = pick_model(token, p["repo"], p["number"], d)
+            if model and set_model_override(tid, model):
+                log("  생성 %s  %s#%d  (문서 변경 -> %s)"
+                    % (tid, p["repo"], p["number"], model))
+            else:
+                # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
+                # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
+                log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
             created += 1
             seen.add(key)
 
