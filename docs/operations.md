@@ -173,6 +173,85 @@ org 웹훅에는 `admin:org_hook` 스코프가 필요합니다.
 오탐이 낮은 등급에만 나오면 사람이 걸러내면 그만이지만,
 차단 등급에 섞이면 멀쩡한 PR 이 멈추기 때문입니다.
 
+### 6. 완료 알림 — `ops/hermes-pr-notifier.py`
+
+끝난 리뷰를 Slack 으로 알립니다. 20초 주기로 칸반만 읽고 모델을 부르지 않습니다.
+
+원래 이 일은 스캐너가 겸했습니다. 그런데 **스캐너는 3분 주기라 알림도 3분까지 늦어졌습니다.**
+리뷰 시작은 웹훅으로 즉시인데 완료 알림만 폴링이면 앞뒤가 맞지 않습니다. 그래서 떼어냈습니다.
+
+칸반에 내장된 알림(`notify-subscribe`)을 쓰지 않는 이유는 형식입니다. 기본 알림은
+태스크 제목만 실어서 판정과 코멘트 URL 이 빠집니다.
+
+```
+기본 알림  ✔️ [default] @default Kanban t_xxx done — [repo PR review] #24 제목...
+지금       ✅ [repo] PR #24 변경 요청 — https://github.com/.../pull/24#issuecomment-...
+```
+
+워커가 남긴 완료 요약의 첫 줄이 이미 원하는 형식이므로 그것을 그대로 보냅니다.
+전송에 성공했을 때만 기록하므로 실패하면 다음 주기에 다시 시도합니다.
+
+> 처음 켤 때는 `--seed` 로 한 번 돌리세요. 이미 끝난 태스크를 발송 완료로 표시해
+> 과거 리뷰가 무더기로 다시 날아가는 것을 막습니다.
+
+---
+
+## 설치된 Hermes 패키지에 넣은 로컬 패치
+
+`ops/apply-local-patches.py` 가 관리합니다. **`hermes update` 뒤에 반드시 다시 돌려야 합니다.**
+
+### 왜 필요한가
+
+게이트웨이가 채팅 화면으로 내보내는 오류 문구는 정형화되어 있습니다.
+
+```python
+_GATEWAY_AUTH_ERROR_RE = (provider authentication failed|incorrect api key
+                          |invalid api key|\b401\b)
+```
+
+`401` 이 섞인 어떤 문자열이든 "Provider authentication failed" 로 표시됩니다.
+**표시된 원인과 실제 원인이 다를 수 있는데 원본은 어디에도 남지 않습니다.**
+
+실제로 2026-08-16 에 Slack 에서 이 문구가 반복해서 떴습니다. 인증은 멀쩡했고
+같은 요청이 CLI 에서는 끝까지 돌았습니다. 더 나쁜 것은 **게이트웨이 로그에 그 요청의
+흔적이 한 줄도 없었다는 점**입니다. 응답은 나갔는데 받은 기록이 없으니 추적이 불가능했습니다.
+
+### 무엇을 넣는가
+
+| 대상 | 내용 |
+|---|---|
+| `gateway/run.py` | 정형 문구로 바뀌기 전 원본 오류를 `logger.warning` 으로 남김 |
+| `gateway/platforms/base.py` | 메시지가 게이트웨이에 닿는 순간(`platform inbound`)을 남김 |
+| `gateway/platforms/base.py` | 활성 세션 가드에 걸리는 경우를 남김 |
+
+### 사용법
+
+```bash
+# 적용 여부 확인 (0=모두 적용, 1=미적용 있음)
+./ops/apply-local-patches.py --check
+
+# 적용. 여러 번 돌려도 안전하다
+./ops/apply-local-patches.py
+
+# 적용 후 게이트웨이 재시작이 필요하다
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway
+```
+
+원본은 `~/hermes-ops/patch-backups/` 에 자동 백업됩니다.
+Hermes 버전이 올라가 코드가 달라지면 앵커를 못 찾고 실패로 끝납니다. 그때는 수동 확인이 필요합니다.
+
+### 장애를 만났을 때 읽는 순서
+
+`~/.hermes/logs/agent.log` 에서 이 셋을 봅니다.
+
+| 로그 | 없으면 |
+|---|---|
+| `platform inbound` | 어댑터도 메시지를 못 받았다 (연결 문제) |
+| `active-session guard` | 이전 세션이 안 풀려 막혔다 |
+| `user saw mapped text` | 이 줄의 `raw=` 가 실제 원인이다 |
+
+---
+
 ### 모델 라우팅
 
 문서만 바뀌고 규모가 작은 PR 은 가벼운 모델로 돌립니다. 판단 근거를 좁게 잡아
@@ -217,6 +296,8 @@ chmod 600 ~/.hermes/gh_token
 | `WEBHOOK_SECRET_FILE` | `~/.hermes/webhook_secret` | org 웹훅 HMAC 시크릿 |
 | `WEBHOOK_PORT` | `8645` | 수신기 포트 |
 | `METRICS_PORT` | `10104` | 지표 서버 포트 |
+| `NOTIFY_INTERVAL` | `20` | 완료 알림 확인 주기(초) |
+| `HERMES_PATCH_BACKUP` | `~/hermes-ops/patch-backups` | 로컬 패치 원본 백업 위치 |
 | `HERMES_GATEWAY_LABEL` | `ai.hermes.gateway` | 게이트웨이 launchd 레이블 |
 
 ### launchd 등록

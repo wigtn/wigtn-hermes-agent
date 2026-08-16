@@ -111,6 +111,7 @@ hermes auth add openai-codex --type oauth
 | `hermes-webhook-receiver.py` | 상주 | org 웹훅을 받아 PR 이 열리는 즉시 리뷰 태스크 생성 |
 | `hermes-pr-scanner.py` | 3분 | 조직의 새 PR 을 훑는 안전망. 수신기가 놓친 것을 주워감 |
 | `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |
+| `hermes-pr-notifier.py` | 20초 | 끝난 리뷰를 판정·링크와 함께 Slack 으로 알림 |
 | `hermes-metrics.py` | 상주 | 리뷰 건수·판정·소요 시간을 Prometheus 로 노출 |
 
 표준 라이브러리만 씁니다. 추가 의존성이 없습니다.
@@ -123,6 +124,10 @@ GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
 ```
 
 설계 근거, 환경 변수, 운영 중 확인법은 [`docs/operations.md`](docs/operations.md) 에 있습니다.
+
+> **`hermes update` 뒤에는 `./ops/apply-local-patches.py` 를 돌리세요.** 장애 추적에 필요한
+> 로그를 Hermes 패키지에 직접 넣어 둔 것이 있는데, 업그레이드하면 덮어써져 사라집니다.
+> 사라진 것을 아무도 모르는 것이 문제라, 다음 장애 때 로그가 비어 있게 됩니다.
 
 ---
 
@@ -186,7 +191,9 @@ wigtn-hermes-agent/
 │   ├── hermes-webhook-receiver.py   org 웹훅 수신 → 리뷰 태스크
 │   ├── hermes-pr-scanner.py         새 PR 폴링 (안전망)
 │   ├── hermes-worktree-reaper.py    병합된 PR 의 워크트리 회수
+│   ├── hermes-pr-notifier.py        완료 알림 Slack 발송 (20초)
 │   ├── hermes-metrics.py            리뷰 실적 Prometheus 노출
+│   ├── apply-local-patches.py       Hermes 패키지 로컬 패치 재적용
 │   └── alertmanager.example.yml     Slack 알림 설정 예시
 ├── docs/
 │   └── operations.md                운영 가이드

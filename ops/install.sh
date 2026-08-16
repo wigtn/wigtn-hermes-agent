@@ -11,7 +11,7 @@ set -euo pipefail
 OPS_DIR="${HERMES_OPS_DIR:-$HOME/hermes-ops}"
 LA_DIR="$HOME/Library/LaunchAgents"
 PREFIX="${LAUNCHD_PREFIX:-com.local}"
-JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-metrics hermes-webhook-receiver)
+JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-metrics hermes-webhook-receiver hermes-pr-notifier)
 
 if [ "${1:-}" = "--uninstall" ]; then
   for j in "${JOBS[@]}"; do
@@ -40,7 +40,8 @@ fi
 mkdir -p "$OPS_DIR"/{logs,reviews,review-drafts} "$LA_DIR"
 
 for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py \
-         hermes-metrics.py hermes-webhook-receiver.py; do
+         hermes-metrics.py hermes-webhook-receiver.py hermes-pr-notifier.py \
+         apply-local-patches.py; do
   install -m 0755 "$(dirname "$0")/$f" "$OPS_DIR/$f"
 done
 echo "스크립트 배치: $OPS_DIR"
@@ -51,7 +52,7 @@ schedule_for() {
     hermes-watchdog)        echo "<key>StartInterval</key><integer>120</integer>" ;;
     hermes-pr-scanner)      echo "<key>StartInterval</key><integer>180</integer>" ;;
     hermes-worktree-reaper) echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>" ;;
-    hermes-metrics|hermes-webhook-receiver)
+    hermes-metrics|hermes-webhook-receiver|hermes-pr-notifier)
       # 주기 실행이 아니라 상주한다. 죽으면 launchd 가 되살린다.
       echo "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>" ;;
   esac
@@ -85,6 +86,7 @@ for j in "${JOBS[@]}"; do
     <key>HERMES_LIGHT_MODEL</key><string>${HERMES_LIGHT_MODEL:-}</string>
     <key>HERMES_LIGHT_MAX_CHANGES</key><string>${HERMES_LIGHT_MAX_CHANGES:-200}</string>
     <key>WEBHOOK_SECRET_FILE</key><string>${WEBHOOK_SECRET_FILE:-${HERMES_HOME:-$HOME/.hermes}/webhook_secret}</string>
+    <key>NOTIFY_INTERVAL</key><string>${NOTIFY_INTERVAL:-20}</string>
   </dict>
   $(schedule_for "$j")
   <key>StandardOutPath</key><string>$OPS_DIR/logs/$j.out.log</string>
@@ -101,6 +103,9 @@ done
 echo
 echo "등록된 작업:"
 launchctl list | grep -E "$(IFS='|'; echo "${JOBS[*]}")" || true
+echo
+echo "알림은 처음에 한 번 --seed 로 돌려 과거 리뷰가 다시 날아가지 않게 하세요:"
+echo "  $OPS_DIR/hermes-pr-notifier.py --seed"
 echo
 echo "스캐너는 첫 실행에서 기준 시각만 기록하고 태스크를 만들지 않습니다."
 echo "이미 열려 있던 PR 은 대상에서 제외됩니다."
