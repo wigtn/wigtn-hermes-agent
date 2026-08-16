@@ -540,7 +540,9 @@ def main():
             created += 1
             seen.add(key)
 
-    announced, sent = announce_finished(announced, args.dry_run)
+    # 완료 알림은 hermes-pr-notifier.py 가 20초 주기로 담당한다.
+    # 스캐너는 3분 주기라 알림까지 맡으면 최대 3분 늦어진다.
+    sent = 0
     if not args.dry_run:
         save_state(seen, watermark, announced)
     log("완료: 생성 %d · 알림 %d · 초안 %d · 중복 %d · 기준시각이전 %d"
