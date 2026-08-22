@@ -219,7 +219,12 @@ def main():
         return 0
 
     touched = set()
-    for pt, path, s in missing:
+    for pt, path, _stale in missing:
+        # 파일 내용을 매번 다시 읽는다. missing 을 만들 때의 스냅샷을 쓰면
+        # 같은 파일에 패치가 둘 이상일 때 뒤엣것이 앞엣것을 덮어써서
+        # \"적용\" 이라고 출력하면서 실제로는 지운다. 업그레이드 직후
+        # 전부 미적용인 상태가 정확히 그 경우다.
+        s = io.open(path, encoding="utf-8").read()   # 직전 패치 결과를 반영
         if pt["old"] not in s:
             print("  실패: %s — 앵커를 찾지 못했습니다." % pt["marker"])
             print("        Hermes 버전이 바뀌어 코드가 달라졌을 수 있습니다. 수동 확인이 필요합니다.")
