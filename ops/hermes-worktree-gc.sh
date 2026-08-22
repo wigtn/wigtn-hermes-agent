@@ -29,6 +29,13 @@ WORKTREE_ROOTS=(
   # 590MB 까지 부푼 적이 있다. 로컬 검증(npm ci)을 켠 뒤로는 더 빨리 쌓인다.
   "$HOME/reviews"
 )
+# 리뷰 원본 클론 아래에 붙은 연결 워크트리는 각각 독립 대상으로 올린다.
+# 부모(원본 클론)의 find 로 함께 쓸어버리면 그 워크트리 자신의 등록·미커밋변경·
+# 최근활동 검사를 건너뛰게 되어, 등록된 작업 디렉터리를 보호한다는 이 스크립트의
+# 안전 계약이 깨진다.
+for _nested in "$HOME"/reviews/*/.worktrees; do
+  [ -d "$_nested" ] && WORKTREE_ROOTS+=("$_nested")
+done
 # 삭제 대상 이름 (아래 find 식과 일치해야 한다): node_modules .next venv .venv
 # 이 기간 안에 활동이 있으면 건드리지 않는다. 환경변수로 덮어쓸 수 있다.
 # 짧게 잡아도 안전한 이유: 지우는 것이 전부 gitignore 대상이라 커밋 안 된
@@ -121,7 +128,7 @@ for root in "${WORKTREE_ROOTS[@]}"; do
         rm -rf "$t" && log "삭제 $t (${sz:-0}KB)"
       fi
       freed=$((freed + ${sz:-0}))
-    done < <(find "$wt" -name .git -prune -o \
+    done < <(find "$wt" \( -name .git -o -name .worktrees \) -prune -o \
                \( -name node_modules -o -name .next -o -name venv -o -name .venv \) \
                -type d -prune -print 2>/dev/null)
   done
