@@ -63,15 +63,30 @@ ARCHIVE_DIR = os.environ.get(
 )
 LOG_PATH = os.path.join(LOG_DIR, "hermes-worktree-reaper.log")
 
+# 리뷰 원본 클론이 있는 곳. 스캐너의 HERMES_REVIEW_ROOT 와 같은 값이어야 한다.
+REVIEW_ROOT = os.environ.get(
+    "HERMES_REVIEW_ROOT", os.path.join(HOME, "hermes-ops", "reviews"))
+
 # 이 아래에 있는 경로만 건드린다. 경로 탈출 방지.
 ALLOWED_ROOTS = [
     os.path.join(HOME, ".worktrees"),
     os.path.join(HERMES_HOME, "hermes-agent", ".worktrees"),
 ]
+# 리뷰 워크트리는 `<리뷰클론>/.worktrees/` 아래에 생긴다. 여기가 빠져 있어서
+# 리뷰 1건당 워크트리 하나와 pr-* 브랜치 하나가 영구히 남았다.
+# 레포별로 명시해서 더한다. REVIEW_ROOT 자체를 넣으면 원본 클론까지
+# 회수 대상이 되므로 그렇게 하지 않는다.
+if os.path.isdir(REVIEW_ROOT):
+    for _repo in sorted(os.listdir(REVIEW_ROOT)):
+        _wt = os.path.join(REVIEW_ROOT, _repo, ".worktrees")
+        if os.path.isdir(_wt):
+            ALLOWED_ROOTS.append(_wt)
 
 GIT = "/usr/bin/git"
 
 TITLE_RE = re.compile(r"\[([A-Za-z0-9._-]+) PR review\] #(\d+)")
+# 스캐너가 만드는 리뷰 브랜치 이름. `pr-<번호>-<sha 앞 7자리>`.
+BRANCH_RE = re.compile(r"^pr-\d+-[0-9a-f]{7}$")
 DRAFT_RE = re.compile(r"(review|리뷰).*\.(md|json)$", re.IGNORECASE)
 
 
@@ -199,11 +214,23 @@ def remove_worktree(path, dry_run):
         except OSError:
             parent = None
 
+    # 워크트리가 물고 있던 브랜치. 지우기 전에 알아둬야 한다.
+    branch = ""
+    try:
+        branch = run([GIT, "-C", path, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+    except Exception:
+        branch = ""
+
     if parent and os.path.isdir(parent):
         r = run([GIT, "-C", parent, "worktree", "remove", "--force", path])
         if r.returncode != 0:
             shutil.rmtree(path, ignore_errors=True)
         run([GIT, "-C", parent, "worktree", "prune"])
+        # 워크트리만 지우면 pr-* 브랜치가 남는다. 리뷰 1건당 하나씩 쌓인다.
+        # 이름이 스캐너가 만든 형식과 정확히 맞을 때만 지운다. main 같은 것을
+        # 실수로 지우지 않기 위한 방어다.
+        if BRANCH_RE.match(branch):
+            run([GIT, "-C", parent, "branch", "-D", branch])
     else:
         shutil.rmtree(path, ignore_errors=True)
     return size_kb / 1024.0
