@@ -46,6 +46,20 @@ def find_site_packages():
     env = os.environ.get("HERMES_SITE_PACKAGES")
     if env:
         return env
+    # 실제로 돌고 있는 게이트웨이의 site-packages 를 먼저 본다.
+    # shutil.which("hermes") 는 PATH 에 잡히는 아무 설치나 고르는데,
+    # 이 호스트에는 hermes 가 둘 깔려 있어서 launchd 가 안 쓰는 쪽을
+    # 검사하고 "적용됨" 이라고 답하는 사고가 실제로 있었다.
+    try:
+        import json as _json
+        with io.open(os.path.join(HOME, ".hermes", "gateway.pid"),
+                     encoding="utf-8") as _f:
+            _argv = (_json.load(_f).get("argv") or [""])[0]
+        _marker = os.sep + "site-packages" + os.sep
+        if _marker in _argv:
+            return _argv.split(_marker)[0] + os.sep + "site-packages"
+    except Exception:
+        pass
     hermes = shutil.which(os.environ.get("HERMES_BIN", "hermes"))
     if not hermes:
         return None
@@ -125,6 +139,24 @@ PATCHES = [
                 logger.info("active-session guard: session=%s (이미 처리 중)", session_key)
             except Exception:
                 pass''',
+    },
+    {
+        "file": "gateway/run.py",
+        "marker": "401 은 HTTP 상태 문맥일 때만",
+        "why": "401 오탐으로 모든 실패가 인증 실패로 표시되는 것을 막는다",
+        "old": r"""_GATEWAY_AUTH_ERROR_RE = re.compile(
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    re.IGNORECASE,
+)""",
+        "new": r"""_GATEWAY_AUTH_ERROR_RE = re.compile(
+    # 원래 `\b401\b` 였다. 그러면 스레드풀을 거친 모든 실패의 트레이스백에
+    # 반드시 들어가는 `concurrent/futures/_base.py", line 401` 이 걸려서,
+    # 타임아웃도 500 도 503 도 전부 "인증 실패" 로 표시됐다.
+    # 401 은 HTTP 상태 문맥일 때만 인증 실패로 본다.
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key"
+    r"|(?:code|status|statuscode|http)\s*[:=]?\s*401\b)",
+    re.IGNORECASE,
+)""",
     },
 ]
 

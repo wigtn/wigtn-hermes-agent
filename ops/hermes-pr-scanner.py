@@ -18,6 +18,7 @@
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import urllib.parse
@@ -60,7 +61,7 @@ REVIEW_ROOT = os.environ.get(
 GIT = "/usr/bin/git"
 
 MAX_RUNTIME = "45m"
-SKILL = "github-code-review"
+SKILL = "hermes-pr-autoreview"
 ASSIGNEE = "default"
 
 
@@ -137,6 +138,62 @@ def pr_detail(token, repo, number):
 
 MARKER = "<!-- hermes-review -->"
 
+# 레포별 검증 수단. 모델이 추측할 값이 아니라 우리가 아는 값이라서 여기서 준다.
+#   ci  = PR 에 CI 가 붙어 있는가 (있으면 로컬 실행은 중복이다)
+#   cmd = CI 가 없을 때 로컬에서 돌릴 명령. 빈 문자열이면 로컬 수단이 없다는 뜻.
+# 새 레포는 여기에 없어도 된다. 없으면 모델이 CI 를 먼저 보고 스스로 판단한다.
+REPO_VERIFY = {
+    "wigtn-spear":                {"ci": True,  "cmd": "npm ci && npm run check"},
+    "wigtn-platform-mvp":         {"ci": True,  "cmd": "pnpm i && pnpm run typecheck"},
+    "wigtn-hermes-agent":         {"ci": True,  "cmd": "make check"},
+    "wigtn-plugins":              {"ci": True,  "cmd": ""},
+    "wigtn-foundry":              {"ci": True,  "cmd": ""},
+    "wigex":                      {"ci": True,  "cmd": ""},
+    "portfolio-recruit-platform": {"ci": True,  "cmd": "npm ci && npm run typecheck"},
+    "wigtn-webagency-template":   {"ci": False, "cmd": "npm ci && npm run lint && npm run typecheck"},
+    "wigtn-webpage":              {"ci": False, "cmd": "npm ci && npm run lint"},
+    "wigtn-tech-report":          {"ci": False, "cmd": "npm ci && npm run lint"},
+    "NAACL-2027-DEMO":            {"ci": False, "cmd": "python -m pytest -q"},
+    "web-agency":                 {"ci": False, "cmd": ""},
+}
+
+VERIFY_TIMEOUT = os.environ.get("HERMES_VERIFY_TIMEOUT", "8분")
+
+
+def verify_block(repo):
+    """레포에 맞는 검증 지시문. 모델이 알 수 없는 값만 준다."""
+    v = REPO_VERIFY.get(repo)
+    if v is None:
+        return (
+            "이 레포는 검증 수단이 등록되어 있지 않다.\n"
+            "`gh pr checks` 로 CI 가 있는지 먼저 본다. 있으면 그 결과를 근거로 쓴다.\n"
+            "없으면 레포에서 검증 명령을 찾아 돌린다. 없으면 \"없음\" 으로 기록한다."
+        )
+    if v["ci"] and not v["cmd"]:
+        return (
+            "**이 레포는 PR 에 CI 가 있다. `gh pr checks` 결과를 근거로 쓴다.**\n"
+            "로컬에서 따로 돌리지 않는다. CI 가 더 정확하고 빠르다.\n"
+            "체크가 없다고 나오면 \"없음\" 으로 기록한다."
+        )
+    if v["ci"]:
+        return (
+            "**이 레포는 PR 에 CI 가 있다. `gh pr checks` 결과를 근거로 쓴다.**\n"
+            "로컬에서 따로 돌리지 않는다.\n"
+            "체크가 없다고 나오면 그때만 로컬로 `%s` 를 돌린다. %s에서 끊는다."
+            % (v["cmd"], VERIFY_TIMEOUT)
+        )
+    if v["cmd"]:
+        return (
+            "**이 레포는 PR CI 가 없다. 로컬에서 직접 돌린다.**\n"
+            "`%s` 를 워크트리에서 실행한다. %s에서 끊는다.\n"
+            "이 명령은 의존성 설치를 포함한다. 그 외의 설치는 하지 않는다."
+            % (v["cmd"], VERIFY_TIMEOUT)
+        )
+    return (
+        "**이 레포는 PR CI 도 없고 등록된 검증 명령도 없다.**\n"
+        "검증은 \"없음\" 으로 기록하고 넘어간다. 없는 명령을 찾아 헤매지 않는다."
+    )
+
 
 def build_body(repo, number, title, sha, url):
     return f"""{ORG}/{repo} PR #{number} 를 리뷰한다.
@@ -147,13 +204,11 @@ def build_body(repo, number, title, sha, url):
 
 ## 먼저
 
-현재 PR 상태를 조회한다. 이미 머지되거나 닫혔으면 재리뷰하지 말고 완료 처리한다.
 현재 head SHA 가 위 값과 다르면 낡은 큐이므로 짧은 한국어 사유로 보류한다.
 
 ## 리뷰
 
-변경된 코드를 직접 읽고, 가능한 범위에서 실제로 돌려본다.
-보는 순서는 이렇다.
+변경된 코드를 직접 읽는다. 보는 순서는 이렇다.
 
 1. 이 변경으로 깨지는 것이 있는가 (동작, 계약, 경쟁 조건, 실패 경로)
 2. 이 변경이 의도한 일을 실제로 하는가
@@ -162,14 +217,30 @@ def build_body(repo, number, title, sha, url):
 1번만 차단 사유가 된다. 2번은 지적하되 등급을 낮추고, 3번은 참고로만 적는다.
 취향 문제는 쓰지 않는다.
 
+## 검증
+
+{verify_block(repo)}
+
+요약 코멘트에 이 블록을 그대로 넣는다.
+
+### 검증
+- 방법: CI | 로컬 | 없음
+- 명령/체크: `...`
+- 결과: 통과 | 실패 | 미실행 | 없음
+- 근거: ...
+
 ## 근거 기준
 
 **심각도는 근거로 정한다.**
 
 - 차단 문제로 올릴 수 있는 것은 재현했거나 실행해서 확인한 것뿐이다.
+- **검증 수단이 있는데 확인하지 않았으면 REQUEST_CHANGES 를 낼 수 없다.**
+  검증 수단이 없는 레포는 아래 기준을 그대로 적용한다.
 - 실행하지 못했으면 등급을 낮추고 무엇을 확인하지 못했는지 밝힌다.
   지적 자체는 살린다. 논증만으로 보이는 문제도 가치가 있다.
 - 틀린 차단 지적 하나가 맞는 지적 열 개보다 비싸다. 사람이 PR 을 멈추기 때문이다.
+- **깨끗하면 승인한다.** 차단할 것이 없는데 습관적으로 의견으로 내리지 않는다.
+  판정은 승인이 기본값이고, 차단은 근거가 있을 때만 올린다.
 
 특히 두 가지를 조심한다. 둘 다 실제로 틀렸던 유형이다.
 
@@ -181,9 +252,14 @@ def build_body(repo, number, title, sha, url):
 ## 게시
 
 **요약 코멘트 — 하나만 유지한다.**
-`{MARKER}` 가 들어 있는 자기 코멘트를 찾아 수정한다. 없을 때만 새로 만든다.
+`{MARKER}` 가 들어 있는 자기 코멘트를 찾아 **수정한다.** 없을 때만 새로 만든다.
+`gh pr comment` 는 항상 새로 만들기 때문에 그대로 쓰면 안 된다.
 본문 첫 줄은 `{MARKER}` 로 시작해야 다음 리뷰가 찾을 수 있다.
-판정, 확인한 것, 남은 문제, 검토한 head SHA 를 담는다.
+판정, 확인한 것, 남은 문제, 검토한 head SHA, 위의 `### 검증` 블록을 담는다.
+
+요약 코멘트 마지막 줄은 이것으로 끝낸다.
+
+> 틀린 지적이면 이 코멘트에 👎 반응을 남겨주세요. 오탐 집계에 씁니다.
 
 **리뷰 제출 — `{ORG}/{repo}` PR #{number}.**
 `commit_id` 는 검토한 head SHA.
@@ -230,7 +306,16 @@ def ensure_repo(token, repo):
         return path
     os.makedirs(REVIEW_ROOT, exist_ok=True)
     url = "https://github.com/%s/%s.git" % (ORG, repo)
-    r = run([GIT, "clone", "--quiet", url, path], env, timeout=900)
+    # 파셜 클론. 리뷰는 diff 와 최근 트리만 보면 되는데 조직 레포 50개를
+    # 전부 풀 클론하면 수십 GB 로 간다. blob 은 실제로 읽을 때 받아온다.
+    # 서버가 filter 를 거부하면 일반 클론으로 물러선다.
+    r = run([GIT, "clone", "--quiet", "--filter=blob:none", url, path],
+            env, timeout=900)
+    if r.returncode != 0:
+        log("  파셜 클론 실패 %s, 일반 클론으로 재시도: %s"
+            % (repo, r.stderr.strip()[:120]))
+        shutil.rmtree(path, ignore_errors=True)
+        r = run([GIT, "clone", "--quiet", url, path], env, timeout=900)
     if r.returncode != 0:
         log("  클론 실패 %s: %s" % (repo, r.stderr.strip()[:160]))
         return None
@@ -490,7 +575,7 @@ def main():
             log("알림 %d건 발송" % sent)
         return 0
 
-    created = skipped_draft = skipped_seen = skipped_old = 0
+    created = skipped_draft = skipped_seen = skipped_old = skipped_closed = 0
 
     for p in prs:
         if p.get("created_at", "") <= watermark:
@@ -501,6 +586,9 @@ def main():
             continue
         if d.get("draft"):
             skipped_draft += 1
+            continue
+        if (d.get("state") or "open") != "open":
+            skipped_closed += 1
             continue
         key = "%s-pr-review:%d:%s" % (p["repo"], p["number"], d["sha"])
         if key in seen:
@@ -545,8 +633,8 @@ def main():
     sent = 0
     if not args.dry_run:
         save_state(seen, watermark, announced)
-    log("완료: 생성 %d · 알림 %d · 초안 %d · 중복 %d · 기준시각이전 %d"
-        % (created, sent, skipped_draft, skipped_seen, skipped_old))
+    log("완료: 생성 %d · 알림 %d · 초안 %d · 중복 %d · 기준시각이전 %d · 닫힘 %d"
+        % (created, sent, skipped_draft, skipped_seen, skipped_old, skipped_closed))
     return 0
 
 
