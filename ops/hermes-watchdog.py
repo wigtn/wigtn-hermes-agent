@@ -212,7 +212,12 @@ def restart():
     return r.returncode == 0, (r.stderr or r.stdout).strip()
 
 
-def main():
+def detect_problems(since=None):
+    """지금 이상이 있으면 목록으로. 없으면 빈 리스트.
+
+    since 를 주면 Slack 판정을 그 시각 이후로 좁힌다. 재시작 뒤 검증에
+    쓴다. 재시작 전의 연결 성공은 복구의 근거가 될 수 없기 때문이다.
+    """
     problems = []
 
     pid = gateway_pid()
@@ -222,12 +227,24 @@ def main():
     fails = recent_connect_failures()
     # 실패 줄이 많아도 그 사이 연결에 성공했으면 좀비 세션의 로그 소음이다.
     # 재연결 성공 뒤에도 옛 세션이 같은 문구를 계속 찍는다.
-    if fails >= FAIL_THRESHOLD and last_connect_success(SOCKET_STALE) is None:
+    if since is None:
+        ok_ts = last_connect_success(SOCKET_STALE)
+    else:
+        ok_ts = last_connect_success(max(time.time() - since, 0) + 10)
+        if ok_ts is not None and ok_ts < since:
+            ok_ts = None
+    if fails >= FAIL_THRESHOLD and ok_ts is None:
         problems.append("Slack 재연결 루프 (최근 %d분간 실패 %d회)"
                         % (LOOKBACK // 60, fails))
 
     if pid is not None and not webhook_alive():
         problems.append("webhook 포트 %d 무응답" % WEBHOOK_PORT)
+
+    return problems
+
+
+def main():
+    problems = detect_problems()
 
     if not problems:
         return 0
@@ -263,13 +280,14 @@ def main():
     state["escalated"] = False
     save_state(state)
 
-    # 재시작 이후에 연결 성공 줄이 찍혔는지로 본다.
-    # 실패 횟수를 다시 세면 재시작을 유발한 실패가 아직 LOOKBACK 창 안에
-    # 남아 있어 이 경로에서는 언제나 실패로 판정된다.
+    # 재시작 뒤 같은 점검을 다시 돌려 그 문제가 사라졌는지 본다.
+    # Slack 연결 성공만 요구하면 두 방향으로 틀린다. webhook 때문에
+    # 재시작했는데 Slack 로그가 안 찍히면 복구해도 실패로 보고하고,
+    # 반대로 webhook 이 여전히 죽어 있는데 Slack 만 붙으면 복구됐다고 한다.
     time.sleep(30)
     new_pid = gateway_pid()
-    ok_ts = last_connect_success(time.time() - restart_ts + 10)
-    recovered = new_pid is not None and ok_ts is not None and ok_ts >= restart_ts
+    remaining = detect_problems(since=restart_ts)
+    recovered = new_pid is not None and not remaining
 
     if recovered:
         msg = (":wrench: *Hermes 자동 복구*\n"
@@ -278,8 +296,9 @@ def main():
         log("  재시작 성공 (PID %s)" % new_pid)
     else:
         msg = (":warning: *Hermes 재시작했으나 확인 실패*\n"
-               "%s\n재시작 결과: %s / PID %s"
-               % ("\n".join("- " + p for p in problems), ok, new_pid))
+               "%s\n재시작 결과: %s / PID %s\n남은 문제: %s"
+               % ("\n".join("- " + p for p in problems), ok, new_pid,
+                  ", ".join(remaining) if remaining else "없음(프로세스 확인 실패)"))
         log("  재시작 후에도 비정상 (PID %s, %s)" % (new_pid, detail[:120]))
 
     notify(msg)
