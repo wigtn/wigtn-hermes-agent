@@ -107,7 +107,7 @@ hermes auth add openai-codex --type oauth
 
 | 스크립트 | 주기 | 하는 일 |
 |---|---|---|
-| `hermes-watchdog.py` | 2분 | 게이트웨이가 실제로 응답 가능한지 점검, 필요하면 재시작하고 Slack 보고 |
+| `hermes-watchdog.py` | 2분 | 게이트웨이가 실제로 응답 가능한지 점검, 필요하면 재시작하고 Slack 보고. Slack 소켓은 실패 횟수가 아니라 **연결 성공 로그**로 판정합니다 |
 | `hermes-webhook-receiver.py` | 상주 | org 웹훅을 받아 PR 이 열리는 즉시 리뷰 태스크 생성 |
 | `hermes-pr-scanner.py` | 3분 | 조직의 새 PR 을 훑는 안전망. 수신기가 놓친 것을 주워감 |
 | `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |

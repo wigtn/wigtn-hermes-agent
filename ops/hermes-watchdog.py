@@ -59,6 +59,11 @@ WINDOW = 7200                 # 2시간 안에
 MAX_RESTARTS = 3              # 3회를 넘으면 사람을 부른다
 
 FAIL_RE = re.compile(r"Failed to connect|Session is closed")
+# 연결 성공. 어댑터와 slack_bolt 가 각각 찍는다.
+CONNECTED_RE = re.compile(r"Socket Mode connected|Bolt app is running")
+# 이 시간 동안 연결 성공이 한 줄도 없으면 소켓이 실제로 죽은 것으로 본다.
+# 실패 횟수만으로는 좀비 세션의 로그 소음과 진짜 장애를 구분할 수 없다.
+SOCKET_STALE = 300
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -151,6 +156,26 @@ def tail_lines(path, limit=400):
         return []
 
 
+def last_connect_success(within):
+    """최근 within 초 안에 연결 성공 줄이 있으면 그 시각. 없으면 None."""
+    now = time.time()
+    newest = None
+    for path in (AGENT_LOG, GATEWAY_LOG):
+        for line in tail_lines(path):
+            if not CONNECTED_RE.search(line):
+                continue
+            m = TS_RE.match(line)
+            if not m:
+                continue
+            try:
+                ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                continue
+            if now - ts <= within and (newest is None or ts > newest):
+                newest = ts
+    return newest
+
+
 def recent_connect_failures():
     """최근 LOOKBACK 초 안에 찍힌 연결 실패 줄 수."""
     now = time.time()
@@ -195,7 +220,9 @@ def main():
         problems.append("게이트웨이 프로세스 없음")
 
     fails = recent_connect_failures()
-    if fails >= FAIL_THRESHOLD:
+    # 실패 줄이 많아도 그 사이 연결에 성공했으면 좀비 세션의 로그 소음이다.
+    # 재연결 성공 뒤에도 옛 세션이 같은 문구를 계속 찍는다.
+    if fails >= FAIL_THRESHOLD and last_connect_success(SOCKET_STALE) is None:
         problems.append("Slack 재연결 루프 (최근 %d분간 실패 %d회)"
                         % (LOOKBACK // 60, fails))
 
@@ -228,15 +255,21 @@ def main():
             log("  재시작 한도 초과, 에스컬레이션")
         return 1
 
+    restart_ts = time.time()
+
     ok, detail = restart()
     state["restarts"].append(now)
     state["last_restart"] = now
     state["escalated"] = False
     save_state(state)
 
-    time.sleep(25)
+    # 재시작 이후에 연결 성공 줄이 찍혔는지로 본다.
+    # 실패 횟수를 다시 세면 재시작을 유발한 실패가 아직 LOOKBACK 창 안에
+    # 남아 있어 이 경로에서는 언제나 실패로 판정된다.
+    time.sleep(30)
     new_pid = gateway_pid()
-    recovered = new_pid is not None and recent_connect_failures() < FAIL_THRESHOLD
+    ok_ts = last_connect_success(time.time() - restart_ts + 10)
+    recovered = new_pid is not None and ok_ts is not None and ok_ts >= restart_ts
 
     if recovered:
         msg = (":wrench: *Hermes 자동 복구*\n"
