@@ -59,6 +59,11 @@ WINDOW = 7200                 # 2시간 안에
 MAX_RESTARTS = 3              # 3회를 넘으면 사람을 부른다
 
 FAIL_RE = re.compile(r"Failed to connect|Session is closed")
+# 연결 성공. 어댑터와 slack_bolt 가 각각 찍는다.
+CONNECTED_RE = re.compile(r"Socket Mode connected|Bolt app is running")
+# 이 시간 동안 연결 성공이 한 줄도 없으면 소켓이 실제로 죽은 것으로 본다.
+# 실패 횟수만으로는 좀비 세션의 로그 소음과 진짜 장애를 구분할 수 없다.
+SOCKET_STALE = 300
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -151,6 +156,26 @@ def tail_lines(path, limit=400):
         return []
 
 
+def last_connect_success(within):
+    """최근 within 초 안에 연결 성공 줄이 있으면 그 시각. 없으면 None."""
+    now = time.time()
+    newest = None
+    for path in (AGENT_LOG, GATEWAY_LOG):
+        for line in tail_lines(path):
+            if not CONNECTED_RE.search(line):
+                continue
+            m = TS_RE.match(line)
+            if not m:
+                continue
+            try:
+                ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                continue
+            if now - ts <= within and (newest is None or ts > newest):
+                newest = ts
+    return newest
+
+
 def recent_connect_failures():
     """최근 LOOKBACK 초 안에 찍힌 연결 실패 줄 수."""
     now = time.time()
@@ -187,7 +212,12 @@ def restart():
     return r.returncode == 0, (r.stderr or r.stdout).strip()
 
 
-def main():
+def detect_problems(since=None):
+    """지금 이상이 있으면 목록으로. 없으면 빈 리스트.
+
+    since 를 주면 Slack 판정을 그 시각 이후로 좁힌다. 재시작 뒤 검증에
+    쓴다. 재시작 전의 연결 성공은 복구의 근거가 될 수 없기 때문이다.
+    """
     problems = []
 
     pid = gateway_pid()
@@ -195,12 +225,26 @@ def main():
         problems.append("게이트웨이 프로세스 없음")
 
     fails = recent_connect_failures()
-    if fails >= FAIL_THRESHOLD:
+    # 실패 줄이 많아도 그 사이 연결에 성공했으면 좀비 세션의 로그 소음이다.
+    # 재연결 성공 뒤에도 옛 세션이 같은 문구를 계속 찍는다.
+    if since is None:
+        ok_ts = last_connect_success(SOCKET_STALE)
+    else:
+        ok_ts = last_connect_success(max(time.time() - since, 0) + 10)
+        if ok_ts is not None and ok_ts < since:
+            ok_ts = None
+    if fails >= FAIL_THRESHOLD and ok_ts is None:
         problems.append("Slack 재연결 루프 (최근 %d분간 실패 %d회)"
                         % (LOOKBACK // 60, fails))
 
     if pid is not None and not webhook_alive():
         problems.append("webhook 포트 %d 무응답" % WEBHOOK_PORT)
+
+    return problems
+
+
+def main():
+    problems = detect_problems()
 
     if not problems:
         return 0
@@ -228,15 +272,22 @@ def main():
             log("  재시작 한도 초과, 에스컬레이션")
         return 1
 
+    restart_ts = time.time()
+
     ok, detail = restart()
     state["restarts"].append(now)
     state["last_restart"] = now
     state["escalated"] = False
     save_state(state)
 
-    time.sleep(25)
+    # 재시작 뒤 같은 점검을 다시 돌려 그 문제가 사라졌는지 본다.
+    # Slack 연결 성공만 요구하면 두 방향으로 틀린다. webhook 때문에
+    # 재시작했는데 Slack 로그가 안 찍히면 복구해도 실패로 보고하고,
+    # 반대로 webhook 이 여전히 죽어 있는데 Slack 만 붙으면 복구됐다고 한다.
+    time.sleep(30)
     new_pid = gateway_pid()
-    recovered = new_pid is not None and recent_connect_failures() < FAIL_THRESHOLD
+    remaining = detect_problems(since=restart_ts)
+    recovered = new_pid is not None and not remaining
 
     if recovered:
         msg = (":wrench: *Hermes 자동 복구*\n"
@@ -245,8 +296,9 @@ def main():
         log("  재시작 성공 (PID %s)" % new_pid)
     else:
         msg = (":warning: *Hermes 재시작했으나 확인 실패*\n"
-               "%s\n재시작 결과: %s / PID %s"
-               % ("\n".join("- " + p for p in problems), ok, new_pid))
+               "%s\n재시작 결과: %s / PID %s\n남은 문제: %s"
+               % ("\n".join("- " + p for p in problems), ok, new_pid,
+                  ", ".join(remaining) if remaining else "없음(프로세스 확인 실패)"))
         log("  재시작 후에도 비정상 (PID %s, %s)" % (new_pid, detail[:120]))
 
     notify(msg)
