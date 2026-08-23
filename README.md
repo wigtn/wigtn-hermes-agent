@@ -113,8 +113,16 @@ hermes auth add openai-codex --type oauth
 | `hermes-worktree-reaper.py` | 매일 | 병합된 PR 의 작업 워크트리 회수 |
 | `hermes-pr-notifier.py` | 20초 | 끝난 리뷰를 판정·링크와 함께 Slack 으로 알림 |
 | `hermes-metrics.py` | 상주 | 리뷰 건수·판정·소요 시간을 Prometheus 로 노출 |
+| `hermes-worktree-gc.sh` | 매일 | `node_modules` 같은 재생성 가능한 산출물만 정리. 리퍼와 역할이 다릅니다 |
+| `apply-local-patches.py` | 수동 | `hermes update` 로 지워진 로컬 패치 재적용 |
+| `hermes-review-audit.py` | 수동 | 리뷰가 계약대로 동작했는지 검사. 읽기만 합니다 |
 
 표준 라이브러리만 씁니다. 추가 의존성이 없습니다.
+
+`apply-local-patches.py` 와 `hermes-review-audit.py` 는 launchd 에 등록하지
+않습니다. 수동 실행입니다. 아무도 보지 않는 잡을 늘리는 것이 이 시스템이
+겪은 실패 방식이라(크론 하나가 5일간 조용히 실패한 적이 있습니다),
+값이 쓸모 있다고 확인된 뒤에 등록합니다.
 
 ```bash
 GITHUB_ORG=myorg ALERT_CHANNEL=C0123456789 ./ops/install.sh
@@ -201,8 +209,10 @@ wigtn-hermes-agent/
 │   ├── hermes-webhook-receiver.py   org 웹훅 수신 → 리뷰 태스크
 │   ├── hermes-pr-scanner.py         새 PR 폴링 (안전망)
 │   ├── hermes-worktree-reaper.py    병합된 PR 의 워크트리 회수
+│   ├── hermes-worktree-gc.sh        재생성 가능한 산출물 정리 (node_modules 등)
 │   ├── hermes-pr-notifier.py        완료 알림 Slack 발송 (20초)
 │   ├── hermes-metrics.py            리뷰 실적 Prometheus 노출
+│   ├── hermes-review-audit.py       리뷰 계약 준수 감사 (읽기 전용)
 │   ├── apply-local-patches.py       Hermes 패키지 로컬 패치 재적용
 │   └── alertmanager.example.yml     Slack 알림 설정 예시
 ├── docs/
