@@ -65,6 +65,8 @@ VERIFY_RE = re.compile(r"^###\s*검증\s*$", re.MULTILINE)
 METHOD_RE = re.compile(r"^-[^\S\n]*방법[^\S\n]*:[^\S\n]*(\S[^\n]*)$", re.MULTILINE)
 # 계약이 정한 값. 이 셋 중 정확히 하나여야 한다.
 VALID_METHODS = ("CI", "로컬", "없음")
+# 검증 블록의 끝. 다음 제목이 나오면 블록이 끝난 것으로 본다.
+NEXT_HEADING_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
 # 오탐 신고 줄. 문구는 고정이고 이모지만 흔들린다. 그래서 둘을 따로 본다.
 # 실제로 2026-08-23 PR #10 리뷰가 👎 대신 👍 를 써서 "틀린 지적이면 👍" 가 됐다.
 # 신고 신호가 통째로 뒤집히는데, 줄 자체는 있으니 "누락" 으로 세면 원인이 가려진다.
@@ -74,6 +76,20 @@ FEEDBACK_TEXT = "오탐 집계에 씁니다"
 def norm_method(v):
     """백틱과 공백을 벗긴 값."""
     return (v or "").strip().strip("`").strip()
+
+
+def verify_block(body):
+    """`### 검증` 블록 본문만 잘라낸다. 없으면 None.
+
+    코멘트 전체에서 방법 줄을 찾으면, 블록 안에 방법이 없는데 다른 절에
+    `- 방법: ...` 이 있으면 통과해버린다. 계약은 블록 안을 규정한다.
+    """
+    m = VERIFY_RE.search(body)
+    if not m:
+        return None
+    rest = body[m.end():]
+    nxt = NEXT_HEADING_RE.search(rest)
+    return rest[:nxt.start()] if nxt else rest
 
 
 def gh_token():
@@ -226,17 +242,18 @@ def audit(run, bodies):
                  comment_body=body)
         return r
 
-    methods = [norm_method(x) for x in METHOD_RE.findall(body)]
+    vblock = verify_block(body)
+    methods = [norm_method(x) for x in METHOD_RE.findall(vblock or "")]
     r.update(
         comment_scope="현재",
         marker_ok=1 if body.lstrip().startswith(MARKER) else 0,
-        verify_ok=1 if VERIFY_RE.search(body) else 0,
+        verify_ok=1 if vblock is not None else 0,
         # 방법은 정확히 하나여야 하고, 값도 계약이 정한 셋 중 하나여야 한다.
         # 존재만 보면 `방법: 야매` 도 통과한다.
         verify_method=("/".join(methods) if methods else None),
         # 검증 블록 자체가 없으면 "블록 누락" 으로 이미 센다. 여기서 또 세면
         # 같은 실패가 두 번 잡혀 위반 수가 부풀려진다. 그때는 해당없음(None).
-        method_ok=(None if not VERIFY_RE.search(body)
+        method_ok=(None if vblock is None
                    else (1 if (len(methods) == 1
                                and methods[0] in VALID_METHODS) else 0)),
         sha_ok=1 if bm else 0,
