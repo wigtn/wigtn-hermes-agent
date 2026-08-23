@@ -67,15 +67,45 @@ METHOD_RE = re.compile(r"^-[^\S\n]*방법[^\S\n]*:[^\S\n]*(\S[^\n]*)$", re.MULTI
 VALID_METHODS = ("CI", "로컬", "없음")
 # 검증 블록의 끝. 다음 제목이 나오면 블록이 끝난 것으로 본다.
 NEXT_HEADING_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
-# 오탐 신고 줄. 문구는 고정이고 이모지만 흔들린다. 그래서 둘을 따로 본다.
-# 실제로 2026-08-23 PR #10 리뷰가 👎 대신 👍 를 써서 "틀린 지적이면 👍" 가 됐다.
-# 신고 신호가 통째로 뒤집히는데, 줄 자체는 있으니 "누락" 으로 세면 원인이 가려진다.
+# ── 검사의 원칙 ────────────────────────────────────────────────────────
+# 모든 검사는 "어디를 볼 것인가" 를 먼저 정하고 그 범위 안에서만 본다.
+# 존재 여부만 보면 범위 밖의 우연한 일치에 속는다. 이 도구는 PR #11 리뷰에서
+# 같은 뿌리의 결함을 네 번 냈다.
+#
+#   1. 방법 값을 검사하지 않음         (값을 안 봄)
+#   2. 정규식이 개행을 넘어 다음 줄을 집음 (범위를 안 봄)
+#   3. 검증 블록 밖의 방법에 속음       (범위를 안 봄)
+#   4. 신고 줄이 마지막 줄인지 안 봄     (범위를 안 봄)
+#
+# 그래서 검사마다 범위를 아래처럼 못박는다.
+#
+#   검사              범위
+#   marker            첫 줄
+#   verify / method   `### 검증` 블록 안
+#   sha               코멘트 전체 (계약이 위치를 정하지 않는다)
+#   feedback          마지막 비어있지 않은 줄
+#   kanban            칸반 완료 요약의 첫 줄
+#
+# 새 검사를 넣을 때는 범위를 먼저 정하고 이 표에 적는다.
+
 FEEDBACK_TEXT = "오탐 집계에 씁니다"
+# 마지막 줄은 이것과 정확히 같아야 한다. 두 번째는 2026-08-23 이전 계약이고,
+# 그때 리뷰를 위반으로 세지 않기 위해 남겨 둔다.
+FEEDBACK_LINES = (
+    "> 이 리뷰가 도움이 됐으면 :+1:, 지적이 틀렸으면 :-1: 를 눌러주세요. 오탐 집계에 씁니다.",
+    "> 틀린 지적이면 이 코멘트에 👎 반응을 남겨주세요. 오탐 집계에 씁니다.",
+)
 
 
 def norm_method(v):
     """백틱과 공백을 벗긴 값."""
     return (v or "").strip().strip("`").strip()
+
+
+def last_line(body):
+    """마지막 비어있지 않은 줄. 신고 줄은 여기 있어야 한다."""
+    lines = [x.strip() for x in (body or "").splitlines() if x.strip()]
+    return lines[-1] if lines else ""
 
 
 def verify_block(body):
@@ -243,6 +273,7 @@ def audit(run, bodies):
         return r
 
     vblock = verify_block(body)
+    lline = last_line(body)
     methods = [norm_method(x) for x in METHOD_RE.findall(vblock or "")]
     r.update(
         comment_scope="현재",
@@ -257,9 +288,10 @@ def audit(run, bodies):
                    else (1 if (len(methods) == 1
                                and methods[0] in VALID_METHODS) else 0)),
         sha_ok=1 if bm else 0,
-        feedback_ok=(1 if (("👎" in body or ":-1:" in body)
-                            and FEEDBACK_TEXT in body)
-                     else (2 if FEEDBACK_TEXT in body else 0)),
+        # 마지막 줄이 계약 문구와 정확히 같아야 한다. 코멘트 어딘가에
+        # 비슷한 말이 있는 것으로는 안 된다. 2 = 줄은 있는데 변형됨.
+        feedback_ok=(1 if lline in FEEDBACK_LINES
+                     else (2 if FEEDBACK_TEXT in lline else 0)),
         comment_body=body,
     )
     return r
