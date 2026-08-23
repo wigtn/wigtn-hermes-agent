@@ -2,7 +2,7 @@
 # 오래 방치된 에이전트 작업 디렉토리의 재생성 가능 산출물을 정리한다.
 # 사용법: hermes-worktree-gc.sh [--dry-run]
 #
-# 대상: ~/.worktrees, ~/.hermes/hermes-agent/.worktrees
+# 대상: ~/.worktrees, ~/reviews/*/.worktrees
 #   Hermes 는 태스크(주로 PR 작업/리뷰)마다 t_<id> 워크트리를 만든다.
 #   코덱스·클로드코드 등 다른 도구가 같은 위치를 쓰더라도 아래 판정이 적용된다.
 #
@@ -24,7 +24,6 @@ DRY_RUN=0
 
 WORKTREE_ROOTS=(
   "$HOME/.worktrees"
-  "$HOME/.hermes/hermes-agent/.worktrees"
   # 리뷰 원본 클론. 여기는 어떤 잡도 훑지 않아서 web-agency 가 빌드 산출물로
   # 590MB 까지 부푼 적이 있다. 로컬 검증(npm ci)을 켠 뒤로는 더 빨리 쌓인다.
   "$HOME/reviews"
