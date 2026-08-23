@@ -11,7 +11,7 @@ set -euo pipefail
 OPS_DIR="${HERMES_OPS_DIR:-$HOME/hermes-ops}"
 LA_DIR="$HOME/Library/LaunchAgents"
 PREFIX="${LAUNCHD_PREFIX:-com.local}"
-JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-metrics hermes-webhook-receiver hermes-pr-notifier)
+JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-worktree-gc hermes-metrics hermes-webhook-receiver hermes-pr-notifier)
 
 if [ "${1:-}" = "--uninstall" ]; then
   for j in "${JOBS[@]}"; do
@@ -40,18 +40,32 @@ fi
 mkdir -p "$OPS_DIR"/{logs,reviews,review-drafts} "$LA_DIR"
 
 for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py \
-         hermes-metrics.py hermes-webhook-receiver.py hermes-pr-notifier.py \
-         apply-local-patches.py; do
+         hermes-worktree-gc.sh hermes-metrics.py hermes-webhook-receiver.py \
+         hermes-pr-notifier.py apply-local-patches.py hermes-review-audit.py; do
   install -m 0755 "$(dirname "$0")/$f" "$OPS_DIR/$f"
 done
 echo "스크립트 배치: $OPS_DIR"
 
-# 주기: 워치독 2분, 스캐너 3분, 회수 매일 04:30
+# 실행 방법. 대부분 파이썬이지만 gc 는 셸 스크립트다.
+# 여기를 분기하지 않으면 python3 hermes-worktree-gc.py 를 부르게 된다.
+program_for() {
+  case "$1" in
+    hermes-worktree-gc)
+      echo "    <string>/bin/bash</string>"
+      echo "    <string>$OPS_DIR/$1.sh</string>" ;;
+    *)
+      echo "    <string>/usr/bin/python3</string>"
+      echo "    <string>$OPS_DIR/$1.py</string>" ;;
+  esac
+}
+
+# 주기: 워치독 2분, 스캐너 3분, 회수 매일 04:30, 산출물 정리 매일 04:00
 schedule_for() {
   case "$1" in
     hermes-watchdog)        echo "<key>StartInterval</key><integer>120</integer>" ;;
     hermes-pr-scanner)      echo "<key>StartInterval</key><integer>180</integer>" ;;
     hermes-worktree-reaper) echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>" ;;
+    hermes-worktree-gc)     echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>0</integer></dict>" ;;
     hermes-metrics|hermes-webhook-receiver|hermes-pr-notifier)
       # 주기 실행이 아니라 상주한다. 죽으면 launchd 가 되살린다.
       echo "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>" ;;
@@ -67,8 +81,7 @@ for j in "${JOBS[@]}"; do
   <key>Label</key><string>$PREFIX.$j</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>$OPS_DIR/$j.py</string>
+$(program_for "$j")
   </array>
   <key>EnvironmentVariables</key>
   <dict>
