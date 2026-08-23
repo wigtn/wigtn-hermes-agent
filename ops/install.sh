@@ -25,6 +25,25 @@ fi
 : "${GITHUB_ORG:?GITHUB_ORG 를 지정하세요 (예: GITHUB_ORG=myorg)}"
 ALERT_CHANNEL="${ALERT_CHANNEL:-}"
 DENYLIST="${HERMES_PR_DENYLIST:-}"
+# PATH 의 hermes 를 그대로 믿지 않는다. 이 호스트에는 설치가 둘 있었고
+# command -v 가 launchd 가 쓰지 않는 쪽을 골라서 문제가 됐다.
+# 돌고 있는 게이트웨이의 argv 를 먼저 보고, 없을 때만 PATH 로 물러선다.
+_running_hermes() {
+  python3 - <<'PY' 2>/dev/null
+import json, os
+try:
+    argv = (json.load(open(os.path.expanduser("~/.hermes/gateway.pid"))).get("argv") or [""])[0]
+    marker = "/lib/python"
+    if "/site-packages/" in argv:
+        venv = argv.split("/lib/python")[0]
+        cand = venv + "/bin/hermes"
+        if os.path.exists(cand):
+            print(cand)
+except Exception:
+    pass
+PY
+}
+HERMES_BIN="${HERMES_BIN:-$(_running_hermes)}"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes || echo hermes)}"
 GH_BIN="${GH_BIN:-$(command -v gh || echo /opt/homebrew/bin/gh)}"
 
