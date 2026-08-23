@@ -60,11 +60,20 @@ KANBAN_RE = re.compile(r"^[✅⏸]\s*\[[^\]]+\]\s*PR\s*#\d+\s+.*—\s*\S")
 # 코멘트에 적힌 검토 SHA
 BODY_SHA_RE = re.compile(r"검토한 head SHA[^`]*`([0-9a-f]{7,40})`")
 VERIFY_RE = re.compile(r"^###\s*검증\s*$", re.MULTILINE)
-METHOD_RE = re.compile(r"^-\s*방법\s*:\s*(.+)$", re.MULTILINE)
+# `\s*` 를 쓰면 개행을 넘어가서, 값이 비었을 때 아랫줄을 값으로 집는다.
+# 줄 안의 공백만 허용한다.
+METHOD_RE = re.compile(r"^-[^\S\n]*방법[^\S\n]*:[^\S\n]*(\S[^\n]*)$", re.MULTILINE)
+# 계약이 정한 값. 이 셋 중 정확히 하나여야 한다.
+VALID_METHODS = ("CI", "로컬", "없음")
 # 오탐 신고 줄. 문구는 고정이고 이모지만 흔들린다. 그래서 둘을 따로 본다.
 # 실제로 2026-08-23 PR #10 리뷰가 👎 대신 👍 를 써서 "틀린 지적이면 👍" 가 됐다.
 # 신고 신호가 통째로 뒤집히는데, 줄 자체는 있으니 "누락" 으로 세면 원인이 가려진다.
 FEEDBACK_TEXT = "오탐 집계에 씁니다"
+
+
+def norm_method(v):
+    """백틱과 공백을 벗긴 값."""
+    return (v or "").strip().strip("`").strip()
 
 
 def gh_token():
@@ -119,6 +128,7 @@ CREATE TABLE IF NOT EXISTS review_runs (
   marker_ok          INTEGER,
   verify_ok          INTEGER,
   verify_method      TEXT,
+  method_ok          INTEGER,
   sha_ok             INTEGER,
   feedback_ok        INTEGER,
   comment_body       TEXT,     -- 원본 보존. 기준이 바뀌면 재집계한다
@@ -195,7 +205,7 @@ def audit(run, bodies):
 
     if bodies is None:
         r.update(comment_scope="조회실패", comment_count=None, marker_ok=None,
-                 verify_ok=None, verify_method=None, sha_ok=None,
+                 verify_ok=None, verify_method=None, method_ok=None, sha_ok=None,
                  feedback_ok=None, comment_body=None)
         return r
 
@@ -207,22 +217,28 @@ def audit(run, bodies):
     same = bool(bm and r["head_sha"] and bm.group(1).startswith(r["head_sha"][:7]))
     if not bodies:
         r.update(comment_scope="없음", marker_ok=0, verify_ok=0,
-                 verify_method=None, sha_ok=0, feedback_ok=0, comment_body="")
+                 verify_method=None, method_ok=0, sha_ok=0, feedback_ok=0,
+                 comment_body="")
         return r
     if not same:
         r.update(comment_scope="덮어씀", marker_ok=None, verify_ok=None,
-                 verify_method=None, sha_ok=None, feedback_ok=None,
+                 verify_method=None, method_ok=None, sha_ok=None, feedback_ok=None,
                  comment_body=body)
         return r
 
-    mm = METHOD_RE.search(body)
-    methods = METHOD_RE.findall(body)
+    methods = [norm_method(x) for x in METHOD_RE.findall(body)]
     r.update(
         comment_scope="현재",
         marker_ok=1 if body.lstrip().startswith(MARKER) else 0,
         verify_ok=1 if VERIFY_RE.search(body) else 0,
-        # 방법이 여러 줄이면 계약 위반이다. 집계할 때 단일 값이어야 한다.
-        verify_method=("/".join(m.strip() for m in methods) if methods else None),
+        # 방법은 정확히 하나여야 하고, 값도 계약이 정한 셋 중 하나여야 한다.
+        # 존재만 보면 `방법: 야매` 도 통과한다.
+        verify_method=("/".join(methods) if methods else None),
+        # 검증 블록 자체가 없으면 "블록 누락" 으로 이미 센다. 여기서 또 세면
+        # 같은 실패가 두 번 잡혀 위반 수가 부풀려진다. 그때는 해당없음(None).
+        method_ok=(None if not VERIFY_RE.search(body)
+                   else (1 if (len(methods) == 1
+                               and methods[0] in VALID_METHODS) else 0)),
         sha_ok=1 if bm else 0,
         feedback_ok=(1 if (("👎" in body or ":-1:" in body)
                             and FEEDBACK_TEXT in body)
@@ -243,20 +259,22 @@ def save(rows, db_path):
                 "INSERT INTO review_runs (task_id,repo,pr,head_sha,status,"
                 "created_at,duration_min,kanban_first_line,kanban_ok,"
                 "comment_scope,comment_count,marker_ok,verify_ok,verify_method,"
-                "sha_ok,feedback_ok,comment_body,audited_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "method_ok,sha_ok,feedback_ok,comment_body,audited_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(task_id) DO UPDATE SET "
                 "kanban_first_line=excluded.kanban_first_line,"
                 "kanban_ok=excluded.kanban_ok,comment_scope=excluded.comment_scope,"
                 "comment_count=excluded.comment_count,marker_ok=excluded.marker_ok,"
                 "verify_ok=excluded.verify_ok,verify_method=excluded.verify_method,"
-                "sha_ok=excluded.sha_ok,feedback_ok=excluded.feedback_ok,"
+                "method_ok=excluded.method_ok,sha_ok=excluded.sha_ok,"
+                "feedback_ok=excluded.feedback_ok,"
                 "comment_body=excluded.comment_body,audited_at=excluded.audited_at",
                 (r["task_id"], r["repo"], r["pr"], r["head_sha"], r["status"],
                  r["created_at"], r["duration_min"], r["first_line"],
                  r["kanban_ok"], r["comment_scope"], r.get("comment_count"),
                  r.get("marker_ok"), r.get("verify_ok"), r.get("verify_method"),
-                 r.get("sha_ok"), r.get("feedback_ok"), r.get("comment_body"), now))
+                 r.get("method_ok"), r.get("sha_ok"), r.get("feedback_ok"),
+                 r.get("comment_body"), now))
     c.close()
 
 
@@ -300,9 +318,13 @@ def report(rows):
             bad = [r for r in rows if r.get(key) == 0]
         if bad:
             viol.append("%s %d건" % (label, len(bad)))
-    multi = [r for r in rows if (r.get("verify_method") or "").count("/") >= 1]
-    if multi:
-        viol.append("검증 방법 다중 기재 %d건" % len(multi))
+    bad_m = [r for r in rows if r.get("method_ok") == 0
+             and r.get("comment_scope") == "현재"]
+    if bad_m:
+        viol.append("검증 방법 값 위반 %d건 (%s)"
+                    % (len(bad_m),
+                       ", ".join(sorted({(r.get("verify_method") or "빈값")
+                                         for r in bad_m}))))
     scored = [r for r in rows if r.get("comment_scope") == "현재"]
     print()
     print("  코멘트 채점 대상 %d건 (나머지 %d건은 이후 리뷰가 덮어씀 · 조회실패)"
