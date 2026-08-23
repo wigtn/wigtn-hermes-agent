@@ -298,7 +298,11 @@ def audit(run, bodies):
 
 
 def save(rows, db_path):
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    # `--db audit.db` 처럼 파일명만 주면 dirname 이 빈 문자열이고
+    # os.makedirs("") 는 FileNotFoundError 를 낸다. 그때는 현재 디렉터리다.
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     c = sqlite3.connect(db_path)
     c.executescript(SCHEMA)
     now = int(time.time())
