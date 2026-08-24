@@ -64,6 +64,9 @@ CONNECTED_RE = re.compile(r"Socket Mode connected|Bolt app is running")
 # 이 시간 동안 연결 성공이 한 줄도 없으면 소켓이 실제로 죽은 것으로 본다.
 # 실패 횟수만으로는 좀비 세션의 로그 소음과 진짜 장애를 구분할 수 없다.
 SOCKET_STALE = 300
+# 세션 ID. 좀비 루프는 이미 대체된 옛 세션을 계속 물고 실패한다.
+NEW_SESSION_RE = re.compile(r"A new session \((s_\d+)\) has been established")
+OLD_SESSION_RE = re.compile(r"The old session \((s_\d+)\) has been abandoned")
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -176,6 +179,41 @@ def last_connect_success(within):
     return newest
 
 
+def zombie_session_only():
+    """실패가 이미 대체된 옛 세션 것이면 True.
+
+    좀비 루프는 옛 세션 ID 를 계속 물고 실패하는데, 그 사이 더 새로운
+    세션이 확립돼 실제 연결은 살아 있다. 두 ID 가 다르면 그 실패는
+    지금 연결에 대한 것이 아니다.
+
+    진짜 장애에서는 새 세션이 확립되지 않으므로 ID 가 같거나 새 세션이
+    아예 없다. 그때는 False 를 돌려 탐지가 진행된다.
+
+    시간 창을 쓰지 않는다. 창을 쓰면 좀비가 그보다 오래 갈 때 다시 샌다.
+    """
+    newest_new = None
+    newest_old = None
+    for path in (AGENT_LOG, GATEWAY_LOG):
+        for line in tail_lines(path):
+            m = TS_RE.match(line)
+            if not m:
+                continue
+            try:
+                ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                continue
+            g = NEW_SESSION_RE.search(line)
+            if g and (newest_new is None or ts >= newest_new[0]):
+                newest_new = (ts, g.group(1))
+                continue
+            g = OLD_SESSION_RE.search(line)
+            if g and (newest_old is None or ts >= newest_old[0]):
+                newest_old = (ts, g.group(1))
+    if newest_new is None or newest_old is None:
+        return False
+    return newest_new[1] != newest_old[1]
+
+
 def recent_connect_failures():
     """최근 LOOKBACK 초 안에 찍힌 연결 실패 줄 수."""
     now = time.time()
@@ -233,7 +271,9 @@ def detect_problems(since=None):
         ok_ts = last_connect_success(max(time.time() - since, 0) + 10)
         if ok_ts is not None and ok_ts < since:
             ok_ts = None
-    if fails >= FAIL_THRESHOLD and ok_ts is None:
+    # ok_ts 는 시간 창 기반이라 좀비가 그보다 오래 가면 None 이 된다.
+    # 그때 세션 ID 로 한 번 더 걸러낸다. 이쪽은 창이 없다.
+    if fails >= FAIL_THRESHOLD and ok_ts is None and not zombie_session_only():
         problems.append("Slack 재연결 루프 (최근 %d분간 실패 %d회)"
                         % (LOOKBACK // 60, fails))
 
