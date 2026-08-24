@@ -61,9 +61,9 @@ MAX_RESTARTS = 3              # 3회를 넘으면 사람을 부른다
 FAIL_RE = re.compile(r"Failed to connect|Session is closed")
 # 연결 성공. 어댑터와 slack_bolt 가 각각 찍는다.
 CONNECTED_RE = re.compile(r"Socket Mode connected|Bolt app is running")
-# 이 시간 동안 연결 성공이 한 줄도 없으면 소켓이 실제로 죽은 것으로 본다.
-# 실패 횟수만으로는 좀비 세션의 로그 소음과 진짜 장애를 구분할 수 없다.
-SOCKET_STALE = 300
+# 세션 ID. 좀비 루프는 이미 대체된 옛 세션을 계속 물고 실패한다.
+NEW_SESSION_RE = re.compile(r"A new session \((s_\d+)\) has been established")
+OLD_SESSION_RE = re.compile(r"The old session \((s_\d+)\) has been abandoned")
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -156,45 +156,52 @@ def tail_lines(path, limit=400):
         return []
 
 
-def last_connect_success(within):
-    """최근 within 초 안에 연결 성공 줄이 있으면 그 시각. 없으면 None."""
-    now = time.time()
-    newest = None
-    for path in (AGENT_LOG, GATEWAY_LOG):
-        for line in tail_lines(path):
-            if not CONNECTED_RE.search(line):
-                continue
-            m = TS_RE.match(line)
-            if not m:
-                continue
-            try:
-                ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
-            except ValueError:
-                continue
-            if now - ts <= within and (newest is None or ts > newest):
-                newest = ts
-    return newest
+def recent_connect_failures(since=None):
+    """지금 연결에 대한 실패만 센다. 좀비 세션 것은 세지 않는다.
 
+    좀비 실패는 바로 앞줄에 `The old session (X) has been abandoned` 가
+    붙고 X 가 현재 세션이 아니다. 이미 대체된 연결 얘기라 장애가 아니다.
+    실측 44건 중 42건이 그 짝으로 찍혔다.
 
-def recent_connect_failures():
-    """최근 LOOKBACK 초 안에 찍힌 연결 실패 줄 수."""
+    줄 단위로 귀속시키는 이유가 있다. 집계로 비교하면(가장 최신 new 세션
+    vs 가장 최신 old 세션) 세션 교체가 한 번만 있어도 그 뒤 현재 세션의
+    진짜 실패까지 좀비로 오판한다. 감시가 영구히 꺼진다.
+
+    현재 세션을 모를 때는(로그 창 안에 확립 줄이 없을 때) 실패를 그대로
+    센다. 모르면 시끄러운 쪽으로 기울어야 한다.
+
+    since 를 주면 그 시각 이후만, 없으면 최근 LOOKBACK 초를 본다.
+    """
     now = time.time()
     count = 0
     for path in (AGENT_LOG, GATEWAY_LOG):
+        cur = None       # 지금 살아 있는 세션
+        prev_old = None  # 직전 줄이 가리킨 옛 세션
         for line in tail_lines(path):
-            if not FAIL_RE.search(line):
-                continue
             m = TS_RE.match(line)
             if not m:
                 continue
-            try:
-                ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
-            except ValueError:
+            g = NEW_SESSION_RE.search(line)
+            if g:
+                cur = g.group(1)
+                prev_old = None
                 continue
-            if now - ts <= LOOKBACK:
-                count += 1
+            g = OLD_SESSION_RE.search(line)
+            if g:
+                prev_old = g.group(1)
+                continue
+            if FAIL_RE.search(line):
+                try:
+                    ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    prev_old = None
+                    continue
+                in_window = (ts >= since) if since is not None else (now - ts <= LOOKBACK)
+                zombie = (prev_old is not None and cur is not None and prev_old != cur)
+                if in_window and not zombie:
+                    count += 1
+            prev_old = None
     return count
-
 
 def webhook_alive():
     try:
@@ -224,16 +231,10 @@ def detect_problems(since=None):
     if pid is None:
         problems.append("게이트웨이 프로세스 없음")
 
-    fails = recent_connect_failures()
-    # 실패 줄이 많아도 그 사이 연결에 성공했으면 좀비 세션의 로그 소음이다.
-    # 재연결 성공 뒤에도 옛 세션이 같은 문구를 계속 찍는다.
-    if since is None:
-        ok_ts = last_connect_success(SOCKET_STALE)
-    else:
-        ok_ts = last_connect_success(max(time.time() - since, 0) + 10)
-        if ok_ts is not None and ok_ts < since:
-            ok_ts = None
-    if fails >= FAIL_THRESHOLD and ok_ts is None:
+    # 좀비 실패는 이미 걸러진 값이다. 여기에 가드를 더 얹지 않는다.
+    # 가드를 겹칠수록 구멍이 늘어난다는 것을 두 번 겪었다.
+    fails = recent_connect_failures(since=since)
+    if fails >= FAIL_THRESHOLD:
         problems.append("Slack 재연결 루프 (최근 %d분간 실패 %d회)"
                         % (LOOKBACK // 60, fails))
 
