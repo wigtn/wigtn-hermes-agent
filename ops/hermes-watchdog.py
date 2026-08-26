@@ -175,8 +175,10 @@ def recent_connect_failures(since=None):
     now = time.time()
     count = 0
     for path in (AGENT_LOG, GATEWAY_LOG):
-        cur = None       # 지금 살아 있는 세션
-        prev_old = None  # 직전 줄이 가리킨 옛 세션
+        cur = None        # 지금 살아 있는 세션
+        prev_old = None   # 직전 줄이 가리킨 옛 세션
+        last_ok = None    # 마지막 연결 성공 시각
+        cand = []         # 좀비를 걸러낸 실패 후보. 마지막에 다시 거른다
         for line in tail_lines(path):
             m = TS_RE.match(line)
             if not m:
@@ -184,6 +186,19 @@ def recent_connect_failures(since=None):
             g = NEW_SESSION_RE.search(line)
             if g:
                 cur = g.group(1)
+                prev_old = None
+                try:
+                    last_ok = time.mktime(
+                        time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    pass
+                continue
+            if CONNECTED_RE.search(line):
+                try:
+                    last_ok = time.mktime(
+                        time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    pass
                 prev_old = None
                 continue
             g = OLD_SESSION_RE.search(line)
@@ -199,8 +214,14 @@ def recent_connect_failures(since=None):
                 in_window = (ts >= since) if since is not None else (now - ts <= LOOKBACK)
                 zombie = (prev_old is not None and cur is not None and prev_old != cur)
                 if in_window and not zombie:
-                    count += 1
+                    # 여기서 바로 세지 않는다. 이 줄을 읽는 시점에는 뒤에
+                    # 연결 성공이 오는지 알 수 없기 때문이다. 모아 두고
+                    # 파일을 다 읽은 뒤 마지막 성공 이후 것만 남긴다.
+                    cand.append(ts)
             prev_old = None
+        # 마지막 연결 성공 이후의 실패만 센다. 그 이전 실패는 이미 복구된
+        # 지난 일이다. 토큰 교체나 일시적 끊김이 여기 해당한다.
+        count += sum(1 for t in cand if last_ok is None or t > last_ok)
     return count
 
 def webhook_alive():
