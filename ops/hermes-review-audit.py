@@ -56,7 +56,10 @@ MARKER = "<!-- hermes-review -->"
 TITLE_RE = re.compile(r"\[([A-Za-z0-9._-]+) PR review\] #(\d+)")
 SHA_RE = re.compile(r"\(([0-9a-f]{7,40})\)\s*$")
 # 칸반 완료 첫 줄. 노티파이어가 이 줄을 그대로 슬랙에 보낸다.
-KANBAN_RE = re.compile(r"^[✅⏸]\s*\[[^\]]+\]\s*PR\s*#\d+\s+.*—\s*\S")
+# 판정별로 이모지가 갈린다. 승인·변경 요청·의견은 리뷰를 마친 것이고,
+# `⏸` 는 리뷰를 하지 못한 것이다. 차단급 지적을 `⏸` 로 내면 팀이
+# "리뷰가 멈췄다" 로 읽는다.
+KANBAN_RE = re.compile(r"^[✅🔴💬⏸]\s*\[[^\]]+\]\s*PR\s*#\d+\s+.*—\s*\S")
 # 코멘트에 적힌 검토 SHA
 BODY_SHA_RE = re.compile(r"검토한 head SHA[^`]*`([0-9a-f]{7,40})`")
 VERIFY_RE = re.compile(r"^###\s*검증\s*$", re.MULTILINE)
