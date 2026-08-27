@@ -47,6 +47,12 @@ def integrity(path):
             return "열 수 없음: %s" % e
     except sqlite3.DatabaseError as e:
         return "열 수 없음: %s" % e
+    # immutable 은 WAL 을 무시한다. `-wal` 이 있는데도 여기까지 왔다면(읽기
+    # 전용 디렉터리 등) 본체만 본 결과를 정상이라고 할 수 없다. WAL 안의
+    # 손상도, 그 안의 커밋도 보지 못한 채 `ok` 를 내게 된다.
+    wal = path + "-wal"
+    if os.path.exists(wal) and os.path.getsize(wal) > 0:
+        return ("열 수 없음: -wal 이 있는데 읽기 전용으로 열지 못했습니다.")
     try:
         c = sqlite3.connect("file:%s?immutable=1" % path, uri=True, timeout=20)
         try:
@@ -109,9 +115,14 @@ def main():
                         % time.strftime("%Y%m%d-%H%M%S"))
     # `-wal` 까지 보존한다. 본체만 두면 나중에 이 손상본에서 더 파내려 할 때
     # 아직 체크포인트되지 않았던 커밋이 이미 없다.
-    shutil.copy2(DB, keep)
-    if os.path.exists(DB + "-wal"):
-        shutil.copy2(DB + "-wal", keep + "-wal")
+    # 여기서 실패하면 마지막 방어선이 없는 채로 교체하게 된다. 그러느니 멈춘다.
+    try:
+        shutil.copy2(DB, keep)
+        if os.path.exists(DB + "-wal"):
+            shutil.copy2(DB + "-wal", keep + "-wal")
+    except OSError as e:
+        sys.exit("손상본을 보존하지 못했습니다: %s\n"
+                 "보존 없이는 교체하지 않습니다. 보드는 그대로입니다." % e)
     print("  %s" % keep)
 
     print("=== 4. 교체 (-wal / -shm 포함) ===")
@@ -135,14 +146,44 @@ def main():
                  "보드와 -wal / -shm 은 그대로입니다. 손상본은 %s 에 있습니다."
                  % (e, keep))
 
-    # 여기서부터 되돌릴 수 없다. 옛 WAL 을 치우고 원자적으로 바꾼다.
-    # 남겨 두면 새 본체를 옛 WAL 로 해석한다.
+    # 옛 WAL 은 지우지 않고 **옆으로 치운다**. 남겨 두면 새 본체를 옛 WAL 로
+    # 해석하므로 치우기는 해야 하는데, 지워 버리면 뒤이은 os.replace 가
+    # 실패했을 때 되돌릴 것이 없다. 그러면 손상된 보드는 그대로인데 WAL 만
+    # 사라져, 복구 도구가 복구는 못 하고 데이터만 잃는다.
+    moved = []
     for suffix in ("-wal", "-shm"):
         p = DB + suffix
         if os.path.exists(p):
-            os.unlink(p)
-            print("  제거 %s" % os.path.basename(p))
-    os.replace(tmp, DB)          # 같은 파일시스템 -> 원자적 교체
+            away = p + ".replacing"
+            if os.path.exists(away):
+                os.unlink(away)          # 이전 실패의 잔재
+            os.replace(p, away)
+            moved.append((away, p))
+            print("  치움 %s" % os.path.basename(p))
+
+    try:
+        os.replace(tmp, DB)      # 같은 파일시스템 -> 원자적 교체
+    except OSError as e:
+        for away, p in moved:    # 되돌린다
+            try:
+                os.replace(away, p)
+            except OSError:
+                pass
+        try:
+            if os.path.isfile(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+        sys.exit("교체하지 못했습니다: %s\n"
+                 "보드와 -wal / -shm 을 되돌렸습니다. 손상본은 %s 에 있습니다."
+                 % (e, keep))
+
+    # 교체가 끝났다. 이제 치워 둔 것을 지운다.
+    for away, _ in moved:
+        try:
+            os.unlink(away)
+        except OSError:
+            pass
     print("  교체 완료")
 
     print("=== 5. 검증 ===")

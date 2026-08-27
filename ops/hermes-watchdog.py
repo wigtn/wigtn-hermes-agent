@@ -281,7 +281,15 @@ def kanban_corrupt():
         # malformed, not a database. 손상이다. immutable 로 덮지 않는다.
         return "열 수 없음: %s" % e
 
-    # 여기까지 왔으면 sidecar 가 없어 열지 못한 것이다. 본체만 본다.
+    # immutable 은 WAL 을 무시한다. `-wal` 이 있는데도 여기까지 왔다면(읽기
+    # 전용 디렉터리 등) 본체만 본 결과를 정상이라고 할 수 없다. WAL 안의
+    # 손상도, 그 안의 커밋도 보지 못한 채 `ok` 를 내게 된다.
+    wal = KANBAN_DB + "-wal"
+    if os.path.exists(wal) and os.path.getsize(wal) > 0:
+        return ("열 수 없음: -wal 이 있는데 읽기 전용으로 열지 못했습니다. WAL 을 검사할 수 없어 정상으로 판정하지 않습니다.")
+
+    # 사이드카가 없어 열지 못한 것이다. WAL 에 든 내용 자체가 없으므로
+    # 본체만 봐도 잃는 것이 없다.
     try:
         c = sqlite3.connect("file:%s?immutable=1" % KANBAN_DB, uri=True, timeout=20)
         try:
