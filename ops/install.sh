@@ -60,7 +60,8 @@ mkdir -p "$OPS_DIR"/{logs,reviews,review-drafts} "$LA_DIR"
 
 for f in hermes-watchdog.py hermes-pr-scanner.py hermes-worktree-reaper.py \
          hermes-worktree-gc.sh hermes-metrics.py hermes-webhook-receiver.py \
-         hermes-pr-notifier.py apply-local-patches.py hermes-review-audit.py; do
+         hermes-pr-notifier.py apply-local-patches.py hermes-review-audit.py \
+         hermes-kanban-restore.py; do
   install -m 0755 "$(dirname "$0")/$f" "$OPS_DIR/$f"
 done
 echo "스크립트 배치: $OPS_DIR"
@@ -115,8 +116,6 @@ $(program_for "$j")
     <key>ALERT_CHANNEL</key><string>$ALERT_CHANNEL</string>
     <key>HERMES_PR_DENYLIST</key><string>$DENYLIST</string>
     <key>GH_TOKEN_FILE</key><string>$TOKEN_FILE</string>
-    <key>HERMES_LIGHT_MODEL</key><string>${HERMES_LIGHT_MODEL:-}</string>
-    <key>HERMES_LIGHT_MAX_CHANGES</key><string>${HERMES_LIGHT_MAX_CHANGES:-200}</string>
     <key>WEBHOOK_SECRET_FILE</key><string>${WEBHOOK_SECRET_FILE:-${HERMES_HOME:-$HOME/.hermes}/webhook_secret}</string>
     <key>NOTIFY_INTERVAL</key><string>${NOTIFY_INTERVAL:-20}</string>
   </dict>

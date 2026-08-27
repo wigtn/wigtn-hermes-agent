@@ -39,9 +39,6 @@ GATEWAY_LABEL = os.environ.get("HERMES_GATEWAY_LABEL", "ai.hermes.gateway")
 ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
 # 토큰 파일. GH_TOKEN 환경변수가 있으면 그쪽이 우선한다.
 KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
-# 가벼운 변경에 쓸 모델. 비우면 라우팅하지 않고 기본 모델을 쓴다.
-LIGHT_MODEL = os.environ.get("HERMES_LIGHT_MODEL", "")
-LIGHT_MAX_CHANGES = int(os.environ.get("HERMES_LIGHT_MAX_CHANGES", "200"))
 TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", os.path.join(HERMES_HOME, "gh_token"))
 LOG_PATH = os.path.join(LOG_DIR, "hermes-pr-scanner.log")
 STATE_PATH = os.path.join(HERMES_HOME, "pr-scanner-state.json")
@@ -369,65 +366,7 @@ def ensure_repo(token, repo):
 
 
 # 문서/설정으로 취급할 확장자. 이것만 바뀌었고 규모가 작으면 가벼운 모델로 돌린다.
-DOC_EXT = {".md", ".txt", ".rst", ".adoc", ".yml", ".yaml",
-           ".json", ".toml", ".cfg", ".ini"}
-DOC_NAMES = {"LICENSE", ".gitignore", ".gitattributes", ".editorconfig"}
-
-
-def pick_model(token, repo, number, detail):
-    """가벼운 변경이면 가벼운 모델 이름을, 아니면 None 을 준다.
-
-    판단 근거를 좁게 잡는다. 코드가 한 줄이라도 섞이면 기본 모델을 쓴다.
-    리뷰 품질을 아끼자고 놓치는 것보다 한도를 더 쓰는 편이 낫다.
-    """
-    if not LIGHT_MODEL:
-        return None
-    size = (detail.get("additions") or 0) + (detail.get("deletions") or 0)
-    if size > LIGHT_MAX_CHANGES:
-        return None
-    r = run([GH, "api", "repos/%s/%s/pulls/%d/files" % (ORG, repo, number),
-             "--paginate", "--jq", "[.[].filename]"], {"GH_TOKEN": token})
-    if r.returncode != 0:
-        return None
-    try:
-        files = json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not files:
-        return None
-    for f in files:
-        base = os.path.basename(f)
-        ext = os.path.splitext(base)[1].lower()
-        if ext not in DOC_EXT and base not in DOC_NAMES:
-            return None
-    return LIGHT_MODEL
-
-
-def unblock_task(task_id):
-    """모델 확정 후 큐에 풀어준다."""
-    r = run([HERMES_BIN, "kanban", "unblock", task_id], timeout=60)
-    if r.returncode != 0:
-        log("  unblock 실패 %s: %s" % (task_id, r.stderr.strip()[:120]))
-        return False
-    return True
-
-
-def set_model_override(task_id, model):
-    """디스패처가 워커를 띄울 때 -m <model> 로 넘겨준다."""
-    try:
-        conn = sqlite3.connect(KANBAN_DB, timeout=10)
-        with conn:
-            conn.execute("UPDATE tasks SET model_override = ? WHERE id = ?",
-                         (model, task_id))
-        conn.close()
-        return True
-    except sqlite3.Error as e:
-        log("  모델 지정 실패 %s: %s" % (task_id, e))
-        return False
-
-
-def create_task(repo, number, title, sha, url, dry_run, repo_path=None,
-                start_blocked=False):
+def create_task(repo, number, title, sha, url, dry_run, repo_path=None):
     key = "%s-pr-review:%d:%s" % (repo, number, sha)
     task_title = "[%s PR review] #%d %s (%s)" % (repo, number, title, sha)
     if dry_run:
@@ -443,10 +382,7 @@ def create_task(repo, number, title, sha, url, dry_run, repo_path=None,
              "--skill", SKILL,
              "--idempotency-key", key,
              "--created-by", "pr-scanner",
-             "--json"]
-            # 모델을 지정할 태스크는 blocked 로 만든다. 디스패처가 모델이
-            # 확정되기 전에 집어가면 기본 모델로 돌아버리기 때문이다.
-            + (["--initial-status", "blocked"] if start_blocked else []),
+             "--json"],
             timeout=180)
     if r.returncode != 0:
         log("  생성 실패 %s#%d: %s" % (repo, number, r.stderr.strip()[:160]))
@@ -645,31 +581,16 @@ def main():
             repo_path = ensure_repo(token, p["repo"])
             if not repo_path:
                 continue
-        # 모델을 먼저 정한다. 지정할 것이 있으면 blocked 로 만들어
-        # 디스패처가 모델 확정 전에 집어가지 못하게 한다.
-        model = pick_model(token, p["repo"], p["number"], d) if not args.dry_run else None
         tid = create_task(p["repo"], p["number"], p["title"], d["sha"],
-                          d["url"], args.dry_run, repo_path,
-                          start_blocked=bool(model))
+                          d["url"], args.dry_run, repo_path)
         if args.dry_run:
             # dry-run 은 상태를 남기지 않는다. 점검 후 실제 실행했을 때
             # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
-            if model:
-                # 순서가 중요하다. 모델을 박고 나서 풀어준다.
-                # 지정에 실패하면 풀지 않는다. 기본 모델로 새어나가는 것보다
-                # 막아두고 사람이 보는 편이 낫다.
-                if set_model_override(tid, model) and unblock_task(tid):
-                    log("  생성 %s  %s#%d  (문서 변경 -> %s)"
-                        % (tid, p["repo"], p["number"], model))
-                else:
-                    log("  경고: %s 모델 지정 실패로 blocked 유지 (%s#%d)"
-                        % (tid, p["repo"], p["number"]))
-            else:
-                # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
-                # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
-                log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
+            # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
+            # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
+            log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
             created += 1
             seen.add(key)
 

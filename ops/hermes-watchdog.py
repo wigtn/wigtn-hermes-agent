@@ -22,7 +22,9 @@ launchd 의 KeepAlive 는 프로세스가 종료됐을 때만 재시작한다. 2
 import json
 import os
 import re
+import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -43,6 +45,16 @@ ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
 ENV_PATH = os.path.join(HERMES_HOME, ".env")
 STATE_PATH = os.path.join(HERMES_HOME, "watchdog-state.json")
 LOG_PATH = os.path.join(LOG_DIR, "hermes-watchdog.log")
+
+KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
+# 복구본을 놓아 둘 자리. 사람이 검증하고 넣는다.
+RECOVER_DIR = os.path.join(HOME, "hermes-ops", "kanban-recover")
+# 같은 손상으로 다시 알리기까지의 최소 간격. 2분마다 도는데 매번 보내면
+# 소음이 되고, 소음이 되면 사람이 알림을 끈다.
+CORRUPT_RENOTIFY = 3600
+# 손상을 몇 번 연속으로 본 뒤에 사람을 부를지. 보드를 교체하는 찰나에는
+# 파일이 없는 창이 반드시 생기고, 그것은 장애가 아니라 복구 작업이다.
+CORRUPT_CONFIRM = 2
 
 AGENT_LOG = os.path.join(HERMES_HOME, "logs", "agent.log")
 GATEWAY_LOG = os.path.join(HERMES_HOME, "logs", "gateway.log")
@@ -224,6 +236,129 @@ def recent_connect_failures(since=None):
         count += sum(1 for t in cand if last_ok is None or t > last_ok)
     return count
 
+def kanban_corrupt():
+    """보드가 깨졌으면 사유를, 성하면 None.
+
+    quick_check 를 쓴다. integrity_check 는 인덱스까지 전수 검사라 보드가
+    커지면 2분 주기 안에 안 끝날 수 있다. quick_check 로도 실제 손상은
+    잡혔다(`invalid page number`, `btreeInitPage() returns error code 11`).
+
+    파일이 없는 것은 장애가 아니다. 아직 안 만들어졌을 수 있다.
+    """
+    if not os.path.exists(KANBAN_DB):
+        return None
+    # mode=ro 를 먼저 쓴다. -shm 이 있으면 WAL 안의 최신 커밋까지 본다.
+    # 실패하면 immutable=1 로 본체만 본다. -shm 이 없어서 못 여는 것은
+    # 손상이 아니라 그저 아무도 보드를 열고 있지 않다는 뜻이다.
+    r = None
+    for uri in ("file:%s?mode=ro" % KANBAN_DB, "file:%s?immutable=1" % KANBAN_DB):
+        try:
+            c = sqlite3.connect(uri, uri=True, timeout=20)
+            try:
+                r = c.execute("PRAGMA quick_check").fetchone()[0]
+            finally:
+                c.close()
+            break
+        except sqlite3.Error as e:
+            r = "열 수 없음: %s" % e
+    return None if r == "ok" else r
+
+
+def prepare_recovery():
+    """`.recover` 로 복구본을 만들어 둔다. 넣지는 않는다.
+
+    넣는 것은 사람이 판단한다. `.recover` 는 손상된 페이지 안의 행을 살리지
+    못해 데이터가 줄 수 있다. 2026-08-27 손상에서 태스크 1건이 사라졌다.
+
+    실패해도 조용히 넘긴다. 이건 덤이고, 본 일은 사람을 부르는 것이다.
+    """
+    try:
+        os.makedirs(RECOVER_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        snap = os.path.join(RECOVER_DIR, "kanban.db.corrupt-%s" % ts)
+        out = os.path.join(RECOVER_DIR, "recovered-%s.db" % ts)
+        shutil.copy2(KANBAN_DB, snap)
+        sql = subprocess.run(["/usr/bin/sqlite3", snap, ".recover"],
+                             capture_output=True, text=True, timeout=300)
+        if not sql.stdout:
+            return None
+        r = subprocess.run(["/usr/bin/sqlite3", out], input=sql.stdout,
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            return None
+        c = sqlite3.connect("file:%s?mode=ro" % out, uri=True, timeout=20)
+        try:
+            if c.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                return None
+            n = c.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        finally:
+            c.close()
+        return out, n
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+        return None
+
+
+def check_kanban():
+    """보드 손상을 감시한다. 재시작으로 못 고치므로 알리기만 한다.
+
+    detect_problems() 와 분리한 이유가 여기 있다. 거기 걸리면 게이트웨이를
+    재시작하는데, 보드 손상은 재시작해도 그대로고 Slack 세션만 끊긴다.
+
+    연속 CORRUPT_CONFIRM 회를 본 뒤에 부른다. 보드를 교체하는 동안에는
+    파일이 없는 창이 생기고, 그것은 복구 작업이지 장애가 아니다.
+    """
+    reason = kanban_corrupt()
+    state = load_state()
+
+    if reason is None:
+        # 확정 전에 사라진 것은 없던 일로 한다. 알리지 않았으니 거둘 것도 없다.
+        if state.get("kanban_corrupt"):
+            log("칸반 보드 복구 확인")
+            notify(":white_check_mark: *칸반 보드 복구됨*\n"
+                   "PR 자동리뷰가 다시 돕니다.")
+            state.pop("kanban_corrupt", None)
+            state.pop("kanban_notified", None)
+        state.pop("kanban_seen", None)
+        state.pop("kanban_streak", None)
+        save_state(state)
+        return False
+
+    # 사유가 바뀌면 연속으로 보지 않은 것이다. 다시 센다.
+    streak = state.get("kanban_streak", 0) + 1 \
+        if state.get("kanban_seen") == reason else 1
+    state["kanban_seen"] = reason
+    state["kanban_streak"] = streak
+    log("칸반 보드 손상 %d회: %s" % (streak, reason.replace("\n", " / ")[:200]))
+
+    if streak < CORRUPT_CONFIRM:
+        # 교체 중일 수 있다. 다음 주기에 다시 본다.
+        save_state(state)
+        return True
+
+    now = time.time()
+    known = (state.get("kanban_corrupt") == reason)
+    if known and now - state.get("kanban_notified", 0) < CORRUPT_RENOTIFY:
+        save_state(state)
+        return True
+
+    rec = prepare_recovery() if not known else None
+    if rec:
+        line = ("복구본을 만들어 뒀습니다 (태스크 %d건).\n"
+                "```\nops/hermes-kanban-restore.py %s\n```" % (rec[1], rec[0]))
+    else:
+        line = ("복구본 자동 생성에 실패했습니다. "
+                "`sqlite3 <손상본> .recover` 로 직접 떠야 합니다.")
+
+    notify(":rotating_light: *칸반 보드 손상 — PR 자동리뷰가 멈췄습니다*\n"
+           "```\n%s\n```\n"
+           "게이트웨이 재시작으로는 고쳐지지 않습니다. %s"
+           % (reason[:400], line))
+    state["kanban_corrupt"] = reason
+    state["kanban_notified"] = now
+    save_state(state)
+    return True
+
+
 def webhook_alive():
     try:
         with socket.create_connection(("127.0.0.1", WEBHOOK_PORT), timeout=5):
@@ -266,6 +401,9 @@ def detect_problems(since=None):
 
 
 def main():
+    # 보드 손상은 재시작과 무관하다. 재시작 판정보다 먼저, 따로 본다.
+    check_kanban()
+
     problems = detect_problems()
 
     if not problems:

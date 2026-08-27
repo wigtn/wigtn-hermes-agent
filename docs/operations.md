@@ -344,16 +344,73 @@ Hermes 버전이 올라가 코드가 달라지면 앵커를 못 찾고 실패로
 | `active-session guard` | 이전 세션이 안 풀려 막혔다 |
 | `user saw mapped text` | 이 줄의 `raw=` 가 실제 원인이다 |
 
+리뷰가 통째로 안 도는데 위에서 아무것도 안 나오면 보드를 봅니다. 손상이면
+Hermes 가 열기를 거부하므로 로그에 원인이 아니라 거부만 남습니다.
+
+```bash
+./ops/hermes-kanban-restore.py --check
+grep dispatcher ~/.hermes/logs/gateway.log | tail -5
+```
+
 ---
 
-### 모델 라우팅
+### 칸반 보드 손상 — `ops/hermes-kanban-restore.py`
 
-문서만 바뀌고 규모가 작은 PR 은 가벼운 모델로 돌립니다. 판단 근거를 좁게 잡아
-코드가 한 줄이라도 섞이면 기본 모델을 씁니다. 리뷰 품질을 아끼자고 놓치는 것보다
-한도를 더 쓰는 편이 낫기 때문입니다.
+2026-08-27 에 보드가 두 번 깨졌습니다. 그때마다 PR 자동리뷰 **전체**가 멈춥니다.
+Hermes 는 손상된 보드를 열기를 거부하고, 게이트웨이 디스패처는 그 보드를 격리합니다.
 
-- `HERMES_LIGHT_MODEL` 을 비우면 라우팅하지 않습니다.
-- `HERMES_LIGHT_MAX_CHANGES` 로 규모 기준을 바꿉니다 (기본 200줄).
+```
+KanbanDbCorruptError: Refusing to open corrupt kanban DB
+  integrity_check returned 'Tree 2 page 2 cell 0: invalid page number 652'
+```
+
+**원인.** 스캐너가 `model_override` 를 박으려고 Hermes 가 관리하는 WAL DB 에 직접
+`UPDATE` 를 날리고 있었습니다. 두 손상 모두 스캐너가 태스크를 생성한 주기에 났고,
+그 사이 "생성 0건" 주기 수십 번은 멀쩡했습니다. 게다가 라이브러리가 다릅니다.
+
+| 프로세스 | Python | SQLite |
+|---|---|---|
+| ops 스크립트 | 시스템 3.9 | 3.51.0 |
+| Hermes 워커·게이트웨이 | venv 3.11 | 3.50.4 |
+
+`hermes kanban` 에는 `model_override` 를 설정하는 공식 경로가 없어서(create 에
+`--model` 이 없고 edit 은 result/summary/metadata 만 받습니다) 우회로를 뚫어
+놨던 것인데, 그 우회로가 보드를 깨뜨렸습니다. 경량 모델 라우팅을 통째로 걷어냈고,
+**스캐너는 이제 보드에 직접 쓰지 않습니다.** 문서 PR 도 다른 PR 과 같은 모델로 돕니다.
+
+**감시.** 손상 자체보다 나빴던 것은 35분간 아무도 몰랐다는 것입니다. 게이트웨이는
+5분마다 조용히 에러만 찍었고, 사람이 "왜 리뷰가 안 오지" 하고 물어봐서 발견됐습니다.
+밤에 났으면 아침까지 죽어 있었습니다. 워치독이 2분마다 `quick_check` 를 봅니다.
+
+재시작하지 않습니다. 보드 손상은 재시작해도 그대로고 Slack 세션만 끊깁니다.
+그래서 `detect_problems()` 와 분리했습니다. 고치지 못할 일로 재시작하지 않습니다.
+
+자동 복구도 하지 않습니다. `.recover` 는 손상된 페이지 안의 행을 살리지 못합니다.
+실제로 저 손상에서 태스크 1건이 사라졌습니다. 데이터가 줄어드는 결정을 무인으로
+내리지 않습니다. 대신 복구본을 만들어 두고 사람을 부릅니다.
+
+**되돌리는 법.** 알림에 명령이 그대로 들어 있습니다.
+
+```bash
+# 지금 성한지만 보기 (0=성함, 1=손상)
+./ops/hermes-kanban-restore.py --check
+
+# 복구본을 넣기 — 넣기 전에 복구본을 다시 검증하고, 아니면 넣지 않습니다
+./ops/hermes-kanban-restore.py ~/hermes-ops/kanban-recover/recovered-<시각>.db
+```
+
+본체만 갈아끼우면 안 됩니다. 게이트웨이가 붙들고 있는 `-wal` / `-shm` 이 새 파일과
+맞지 않아 즉시 손상으로 보입니다. 이 도구가 셋을 한 묶음으로 다룹니다.
+
+> **읽기 전용으로 열 때의 함정.** WAL 보드는 `-shm` 이 없으면 `mode=ro` 로 열리지
+> 않습니다(`unable to open database file`). SQLite 가 `-shm` 을 만들어야 하는데
+> 읽기 전용이라 못 만들기 때문입니다. 게이트웨이가 보드를 놓는 순간마다 나므로
+> 이것을 손상으로 세면 정상 운영 중에 오탐이 납니다. `immutable=1` 로 다시 봅니다.
+> 실제로 감시를 넣자마자 이 오탐을 밟았습니다.
+
+손상을 연속 2회 본 뒤에 부릅니다. 보드를 교체하는 동안에는 파일이 없는 창이 반드시
+생기고, 그것은 복구 작업이지 장애가 아닙니다. 알림이 최대 2분 늦는데, 실제 손상은
+35분을 갔습니다. 늦는 비용보다 오탐의 비용이 큽니다.
 
 ---
 
@@ -385,8 +442,6 @@ chmod 600 ~/.hermes/gh_token
 | `HERMES_PR_DENYLIST` | (없음) | 리뷰에서 뺄 레포. 쉼표 구분 |
 | `GH_TOKEN` / `GH_TOKEN_FILE` | `~/.hermes/gh_token` | GitHub 인증 |
 | `GH_BIN` | `/opt/homebrew/bin/gh` | gh CLI 경로 |
-| `HERMES_LIGHT_MODEL` | (없음) | 가벼운 변경에 쓸 모델. 비우면 라우팅 안 함 |
-| `HERMES_LIGHT_MAX_CHANGES` | `200` | 가벼운 변경으로 볼 최대 변경 줄 수 |
 | `WEBHOOK_SECRET_FILE` | `~/.hermes/webhook_secret` | org 웹훅 HMAC 시크릿 |
 | `WEBHOOK_PORT` | `8645` | 수신기 포트 |
 | `METRICS_PORT` | `10104` | 지표 서버 포트 |
@@ -425,6 +480,9 @@ tail -5 ~/hermes-ops/logs/hermes-pr-scanner.log
 
 # 워치독이 사고를 잡았나 (로그가 비어 있으면 사고가 없었다는 뜻)
 tail -20 ~/hermes-ops/logs/hermes-watchdog.log
+
+# 칸반 보드가 성한가 (깨지면 리뷰가 통째로 멈춘다)
+./ops/hermes-kanban-restore.py --check
 
 # 게이트웨이가 실제로 연결돼 있나 (상태 파일은 믿지 말 것)
 lsof -nP -p "$(pgrep -f 'hermes_cli.main gateway' | head -1)" | grep ESTABLISHED
