@@ -56,6 +56,12 @@ CORRUPT_RENOTIFY = 3600
 # 손상을 몇 번 연속으로 본 뒤에 사람을 부를지. 보드를 교체하는 찰나에는
 # 파일이 없는 창이 반드시 생기고, 그것은 장애가 아니라 복구 작업이다.
 CORRUPT_CONFIRM = 2
+# 알림에 넣을 복구 도구 경로. 워치독과 같은 자리에 설치된다(install.sh 의 같은
+# 루프). launchd 는 WorkingDirectory 를 주지 않아 cwd 가 `/` 이므로, 상대 경로를
+# 안내하면 사람이 그대로 붙여넣었을 때 파일을 찾지 못한다. 보드가 깨져 리뷰가
+# 멈춘 상황에서 읽는 안내다. 실행되지 않는 명령은 없느니만 못하다.
+RESTORE_TOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "hermes-kanban-restore.py")
 
 AGENT_LOG = os.path.join(HERMES_HOME, "logs", "agent.log")
 GATEWAY_LOG = os.path.join(HERMES_HOME, "logs", "gateway.log")
@@ -297,6 +303,13 @@ def prepare_recovery():
         ts = time.strftime("%Y%m%d-%H%M%S")
         snap = os.path.join(RECOVER_DIR, "kanban.db.corrupt-%s" % ts)
         out = os.path.join(RECOVER_DIR, "recovered-%s.db" % ts)
+        # 빈 자리에서 시작한다. 이름이 초 단위라 같은 초에 두 번 돌면 겹치는데,
+        # 이미 있는 파일에 .recover 결과를 쏟으면 CREATE TABLE 이 "already
+        # exists" 로 실패한다. 그 실패는 알림을 "복구본 생성 실패" 로 바꾸고,
+        # 사람은 보드가 깨진 채 도구 없이 남는다.
+        for p in (snap, snap + "-wal", out):
+            if os.path.exists(p):
+                os.unlink(p)
         snapshot_board(snap)
         sql = subprocess.run(["/usr/bin/sqlite3", snap, ".recover"],
                              capture_output=True, text=True, timeout=300)
@@ -304,7 +317,9 @@ def prepare_recovery():
             return None
         r = subprocess.run(["/usr/bin/sqlite3", out], input=sql.stdout,
                            capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
+        # rc 만 보면 안 된다. sqlite3 CLI 는 스크립트 중간이 깨져도 0 으로
+        # 끝나는 경우가 있다. stderr 가 비어 있어야 한다.
+        if r.returncode != 0 or r.stderr.strip():
             return None
         c = sqlite3.connect("file:%s?mode=ro" % out, uri=True, timeout=20)
         try:
@@ -368,7 +383,7 @@ def check_kanban():
     rec = prepare_recovery() if not known else None
     if rec:
         line = ("복구본을 만들어 뒀습니다 (태스크 %d건).\n"
-                "```\nops/hermes-kanban-restore.py %s\n```" % (rec[1], rec[0]))
+                "```\n%s %s\n```" % (rec[1], RESTORE_TOOL, rec[0]))
     else:
         line = ("복구본 자동 생성에 실패했습니다. "
                 "`sqlite3 <손상본> .recover` 로 직접 떠야 합니다.")
