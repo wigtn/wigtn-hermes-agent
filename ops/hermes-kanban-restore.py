@@ -23,7 +23,10 @@ import time
 HOME = os.path.expanduser("~")
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.join(HOME, ".hermes"))
 DB = os.path.join(HERMES_HOME, "kanban.db")
-KEEP = os.path.join(HOME, "hermes-ops", "kanban-recover")
+# 손상본과 복구본을 두는 자리. 워치독과 같은 변수를 본다. 둘이 어긋나면
+# 워치독이 안내한 경로를 이 도구가 찾지 못한다.
+KEEP = os.environ.get("HERMES_RECOVER_DIR",
+                      os.path.join(HOME, "hermes-ops", "kanban-recover"))
 HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 
 
@@ -104,16 +107,33 @@ def main():
     print("  %s" % keep)
 
     print("=== 4. 교체 (-wal / -shm 포함) ===")
-    # 순서가 중요하다. 옛 WAL 을 먼저 치우고 본체를 넣는다. 반대로 하면 그
-    # 사이에 누가 열었을 때 새 본체를 옛 WAL 로 해석한다.
+    # 실패할 수 있는 일을 먼저 끝낸다. 여기까지는 되돌릴 수 있다 — 보드도
+    # sidecar 도 손대지 않았다. 순서가 거꾸로면(sidecar 를 먼저 지우면)
+    # 복사가 실패했을 때 손상된 보드는 그대로인데 WAL 만 사라진다. 거기
+    # 있던 미체크포인트 태스크는 그 순간 복구 불가능해진다.
+    tmp = DB + ".incoming"
+    if os.path.exists(tmp) and not os.path.isfile(tmp):
+        sys.exit("%s 가 파일이 아닙니다. 치우고 다시 실행하세요." % tmp)
+    try:
+        shutil.copy2(args.source, tmp)
+        os.chmod(tmp, 0o644)
+    except OSError as e:
+        try:
+            if os.path.isfile(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+        sys.exit("복구본을 준비하지 못했습니다: %s\n"
+                 "보드와 -wal / -shm 은 그대로입니다. 손상본은 %s 에 있습니다."
+                 % (e, keep))
+
+    # 여기서부터 되돌릴 수 없다. 옛 WAL 을 치우고 원자적으로 바꾼다.
+    # 남겨 두면 새 본체를 옛 WAL 로 해석한다.
     for suffix in ("-wal", "-shm"):
         p = DB + suffix
         if os.path.exists(p):
             os.unlink(p)
             print("  제거 %s" % os.path.basename(p))
-    tmp = DB + ".incoming"
-    shutil.copy2(args.source, tmp)
-    os.chmod(tmp, 0o644)
     os.replace(tmp, DB)          # 같은 파일시스템 -> 원자적 교체
     print("  교체 완료")
 

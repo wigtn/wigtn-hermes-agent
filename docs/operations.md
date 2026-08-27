@@ -399,6 +399,11 @@ KanbanDbCorruptError: Refusing to open corrupt kanban DB
 ./ops/hermes-kanban-restore.py ~/hermes-ops/kanban-recover/recovered-<시각>.db
 ```
 
+> **되돌릴 수 없는 일은 마지막에.** 복사와 권한 설정을 먼저 끝내고, 성공한 뒤에야
+> 옛 `-wal` / `-shm` 을 치웁니다. 순서가 거꾸로면 복사가 실패했을 때 손상된 보드는
+> 그대로인데 WAL 만 사라지고, 거기 있던 미체크포인트 태스크는 그 순간 복구
+> 불가능해집니다. 실패하면 보드도 sidecar 도 건드리지 않고 손상본 위치를 알립니다.
+
 본체만 갈아끼우면 안 됩니다. 게이트웨이가 붙들고 있는 `-wal` / `-shm` 이 새 파일과
 맞지 않아 즉시 손상으로 보입니다. 이 도구가 셋을 한 묶음으로 다룹니다.
 
@@ -461,6 +466,7 @@ chmod 600 ~/.hermes/gh_token
 | `WEBHOOK_PORT` | `8645` | 수신기 포트 |
 | `METRICS_PORT` | `10104` | 지표 서버 포트 |
 | `NOTIFY_INTERVAL` | `20` | 완료 알림 확인 주기(초) |
+| `HERMES_RECOVER_DIR` | `~/hermes-ops/kanban-recover` | 칸반 손상본·복구본 보관. 워치독과 복구 도구가 같이 본다 |
 | `HERMES_PATCH_BACKUP` | `~/hermes-ops/patch-backups` | 로컬 패치 원본 백업 위치 |
 | `HERMES_GATEWAY_LABEL` | `ai.hermes.gateway` | 게이트웨이 launchd 레이블 |
 

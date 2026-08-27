@@ -48,7 +48,8 @@ LOG_PATH = os.path.join(LOG_DIR, "hermes-watchdog.log")
 
 KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
 # 복구본을 놓아 둘 자리. 사람이 검증하고 넣는다.
-RECOVER_DIR = os.path.join(HOME, "hermes-ops", "kanban-recover")
+RECOVER_DIR = os.environ.get("HERMES_RECOVER_DIR",
+                             os.path.join(HOME, "hermes-ops", "kanban-recover"))
 # 같은 손상으로 다시 알리기까지의 최소 간격. 2분마다 도는데 매번 보내면
 # 소음이 되고, 소음이 되면 사람이 알림을 끈다.
 CORRUPT_RENOTIFY = 3600
