@@ -430,8 +430,22 @@ KanbanDbCorruptError: Refusing to open corrupt kanban DB
 > **읽기 전용으로 열 때의 함정.** WAL 보드는 `-shm` 이 없으면 `mode=ro` 로 열리지
 > 않습니다(`unable to open database file`). SQLite 가 `-shm` 을 만들어야 하는데
 > 읽기 전용이라 못 만들기 때문입니다. 게이트웨이가 보드를 놓는 순간마다 나므로
-> 이것을 손상으로 세면 정상 운영 중에 오탐이 납니다. `immutable=1` 로 다시 봅니다.
-> 실제로 감시를 넣자마자 이 오탐을 밟았습니다.
+> 이것을 손상으로 세면 정상 운영 중에 오탐이 납니다. 실제로 감시를 넣자마자
+> 이 오탐을 밟았습니다.
+>
+> 그렇다고 실패했다고 무조건 `immutable=1` 로 넘어가면 안 됩니다. `immutable=1` 은
+> WAL 을 통째로 무시하고 본체만 읽으므로, **WAL 이 깨진 보드를 `ok` 로 봅니다.**
+> 감시가 손상을 놓칩니다. 그래서 실패의 종류를 가립니다.
+>
+> | 상황 | 예외 | 판정 |
+> |---|---|---|
+> | WAL + 사이드카 없음 (정상) | `OperationalError` `unable to open database file` | 본체만 검사 |
+> | WAL 프레임 훼손 | `DatabaseError` `database disk image is malformed` | **손상** |
+> | 본체 훼손 | `DatabaseError` `file is not a database` | **손상** |
+>
+> `OperationalError` 는 `DatabaseError` 의 하위 클래스라 먼저 잡으면 갈립니다.
+> 논리도 맞습니다 — `mode=ro` 가 열지 못하는 것은 `-wal` 도 `-shm` 도 없을 때이고,
+> 그때는 WAL 에 든 내용 자체가 없으므로 본체만 봐도 잃는 것이 없습니다.
 
 > **손상본을 뜰 때 WAL 을 빼지 말 것.** 본체만 복사한 뒤 `.recover` 를 돌리면 WAL 에
 > 아직 체크포인트되지 않은 커밋이 빠집니다. 최근 태스크가 사라진 복구본이 나오는데

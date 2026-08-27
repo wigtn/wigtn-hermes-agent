@@ -32,21 +32,29 @@ HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 
 def integrity(path):
     """quick_check 결과. 열 수조차 없으면 그 사유를 문자열로 준다."""
-    # mode=ro 로 열어 보고, 못 열면 immutable=1 로 본다. WAL 보드는 -shm 이
-    # 없으면 읽기 전용으로 열리지 않는다. 그것은 손상이 아니라 아무도 보드를
-    # 열고 있지 않다는 뜻이다. immutable 은 WAL 안의 미체크포인트 커밋을
-    # 보지 못하지만, 여기서 보려는 것은 본체의 페이지 구조다.
-    r = None
-    for uri in ("file:%s?mode=ro" % path, "file:%s?immutable=1" % path):
+    # 실패의 종류를 가린다. 무조건 immutable 로 넘어가면 WAL 이 깨진 보드를
+    # `ok` 로 본다. immutable 은 WAL 을 통째로 무시하기 때문이다.
+    # 열지 못한 것(OperationalError)은 -wal 도 -shm 도 없을 때이고, 그때는
+    # WAL 에 든 내용 자체가 없으므로 본체만 봐도 잃는 것이 없다.
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=20)
         try:
-            c = sqlite3.connect(uri, uri=True, timeout=20)
-            try:
-                return c.execute("PRAGMA quick_check").fetchone()[0]
-            finally:
-                c.close()
-        except sqlite3.Error as e:
-            r = "열 수 없음: %s" % e
-    return r
+            return c.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            c.close()
+    except sqlite3.OperationalError as e:
+        if "unable to open" not in str(e):
+            return "열 수 없음: %s" % e
+    except sqlite3.DatabaseError as e:
+        return "열 수 없음: %s" % e
+    try:
+        c = sqlite3.connect("file:%s?immutable=1" % path, uri=True, timeout=20)
+        try:
+            return c.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            c.close()
+    except sqlite3.Error as e:
+        return "열 수 없음: %s" % e
 
 
 def counts(path):

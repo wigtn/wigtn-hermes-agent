@@ -254,20 +254,42 @@ def kanban_corrupt():
     """
     if not os.path.exists(KANBAN_DB):
         return None
-    # mode=ro 를 먼저 쓴다. -shm 이 있으면 WAL 안의 최신 커밋까지 본다.
-    # 실패하면 immutable=1 로 본체만 본다. -shm 이 없어서 못 여는 것은
-    # 손상이 아니라 그저 아무도 보드를 열고 있지 않다는 뜻이다.
-    r = None
-    for uri in ("file:%s?mode=ro" % KANBAN_DB, "file:%s?immutable=1" % KANBAN_DB):
+    # `mode=ro` 를 먼저 쓴다. `-shm` 이 있으면 WAL 안의 최신 커밋까지 본다.
+    #
+    # 실패했을 때 종류를 가린다. 예전에는 무조건 `immutable=1` 로 다시 봤는데,
+    # 그것은 WAL 을 통째로 무시하고 본체만 읽으므로 WAL 이 깨진 보드를 `ok` 로
+    # 판정한다. 감시가 손상을 놓친다.
+    #
+    #   WAL + sidecar 없음 (정상)  OperationalError  unable to open database file
+    #   WAL 프레임 훼손 (손상)      DatabaseError     database disk image is malformed
+    #   본체 훼손 (손상)           DatabaseError     file is not a database
+    #
+    # OperationalError 는 DatabaseError 의 하위 클래스라 먼저 잡으면 갈린다.
+    # 열지 못한 것은 `-wal` 도 `-shm` 도 없을 때이고, 그때는 WAL 에 든 내용
+    # 자체가 없으므로 본체만 봐도 잃는 것이 없다.
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % KANBAN_DB, uri=True, timeout=20)
         try:
-            c = sqlite3.connect(uri, uri=True, timeout=20)
-            try:
-                r = c.execute("PRAGMA quick_check").fetchone()[0]
-            finally:
-                c.close()
-            break
-        except sqlite3.Error as e:
-            r = "열 수 없음: %s" % e
+            r = c.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            c.close()
+        return None if r == "ok" else r
+    except sqlite3.OperationalError as e:
+        if "unable to open" not in str(e):
+            return "열 수 없음: %s" % e
+    except sqlite3.DatabaseError as e:
+        # malformed, not a database. 손상이다. immutable 로 덮지 않는다.
+        return "열 수 없음: %s" % e
+
+    # 여기까지 왔으면 sidecar 가 없어 열지 못한 것이다. 본체만 본다.
+    try:
+        c = sqlite3.connect("file:%s?immutable=1" % KANBAN_DB, uri=True, timeout=20)
+        try:
+            r = c.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            c.close()
+    except sqlite3.Error as e:
+        return "열 수 없음: %s" % e
     return None if r == "ok" else r
 
 
