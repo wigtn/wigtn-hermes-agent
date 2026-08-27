@@ -264,6 +264,25 @@ def kanban_corrupt():
     return None if r == "ok" else r
 
 
+def snapshot_board(dest):
+    """보드를 뜬다. `-wal` 까지 함께 뜬다.
+
+    본체만 뜨면 WAL 에 아직 체크포인트되지 않은 커밋이 빠진다. 그 상태로
+    `.recover` 를 돌리면 최근 태스크가 사라진 복구본이 나오는데
+    `quick_check` 는 `ok` 라서 사람이 검증해도 통과한다.
+
+    `-shm` 은 뜨지 않는다. SQLite 가 `-wal` 로부터 다시 만든다. stale 한
+    `-shm` 을 같이 두면 어긋난 인덱스를 물려줄 수 있다.
+
+    순서는 본체 다음 WAL 이다. 반대로 하면 그 사이의 체크포인트가 WAL 에서
+    빠진 내용을 본체에도 없는 것으로 만든다.
+    """
+    shutil.copy2(KANBAN_DB, dest)
+    src = KANBAN_DB + "-wal"
+    if os.path.exists(src):
+        shutil.copy2(src, dest + "-wal")
+
+
 def prepare_recovery():
     """`.recover` 로 복구본을 만들어 둔다. 넣지는 않는다.
 
@@ -277,7 +296,7 @@ def prepare_recovery():
         ts = time.strftime("%Y%m%d-%H%M%S")
         snap = os.path.join(RECOVER_DIR, "kanban.db.corrupt-%s" % ts)
         out = os.path.join(RECOVER_DIR, "recovered-%s.db" % ts)
-        shutil.copy2(KANBAN_DB, snap)
+        snapshot_board(snap)
         sql = subprocess.run(["/usr/bin/sqlite3", snap, ".recover"],
                              capture_output=True, text=True, timeout=300)
         if not sql.stdout:
@@ -293,6 +312,10 @@ def prepare_recovery():
             n = c.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
         finally:
             c.close()
+        # 빈 보드를 "복구본" 이라며 내미는 것은 안내하지 않느니만 못하다.
+        # 사람은 알림을 믿고 넣는다.
+        if n == 0:
+            return None
         return out, n
     except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
         return None

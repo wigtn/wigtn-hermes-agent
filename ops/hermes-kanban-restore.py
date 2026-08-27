@@ -82,6 +82,9 @@ def main():
         sys.exit("복구본이 성하지 않습니다. 넣지 않습니다.")
     t, e = counts(args.source)
     print("  tasks=%d  task_events=%d" % (t, e))
+    # 빈 보드는 성하다. 성한 것과 쓸 만한 것은 다르다.
+    if t == 0:
+        sys.exit("복구본에 태스크가 한 건도 없습니다. 넣지 않습니다.")
 
     print("=== 2. 현재 보드 ===")
     print("  %s" % cur)
@@ -93,7 +96,11 @@ def main():
     os.makedirs(KEEP, exist_ok=True)
     keep = os.path.join(KEEP, "kanban.db.corrupt-%s"
                         % time.strftime("%Y%m%d-%H%M%S"))
+    # `-wal` 까지 보존한다. 본체만 두면 나중에 이 손상본에서 더 파내려 할 때
+    # 아직 체크포인트되지 않았던 커밋이 이미 없다.
     shutil.copy2(DB, keep)
+    if os.path.exists(DB + "-wal"):
+        shutil.copy2(DB + "-wal", keep + "-wal")
     print("  %s" % keep)
 
     print("=== 4. 교체 (-wal / -shm 포함) ===")
