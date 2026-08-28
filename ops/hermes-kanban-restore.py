@@ -16,6 +16,7 @@ import argparse
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -131,9 +132,16 @@ def main():
     tmp = DB + ".incoming"
     if os.path.exists(tmp) and not os.path.isfile(tmp):
         sys.exit("%s 가 파일이 아닙니다. 치우고 다시 실행하세요." % tmp)
+    # 권한을 보존한다. 하드코딩하면 관리자가 0600 으로 조여 둔 보드를 복구
+    # 도구가 도로 풀어 버린다. 복구가 보안 설정을 되돌리면 안 된다.
+    # 기존 보드가 없거나 읽지 못하면 좁은 쪽(0600)으로 간다.
+    try:
+        mode = stat.S_IMODE(os.stat(DB).st_mode)
+    except OSError:
+        mode = 0o600
     try:
         shutil.copy2(args.source, tmp)
-        os.chmod(tmp, 0o644)
+        os.chmod(tmp, mode)
     except OSError as e:
         try:
             if os.path.isfile(tmp):
