@@ -35,6 +35,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 HOME = os.path.expanduser("~")
 
@@ -51,6 +54,15 @@ OUT_DB = os.environ.get(
     "HERMES_AUDIT_DB", os.path.join(HOME, "hermes-ops", "review-outcomes.db"))
 
 MARKER = "<!-- hermes-review -->"
+
+# 알림. 워치독과 같은 경로를 쓴다 — 봇 토큰으로 직접 부른다.
+ENV_PATH = os.path.join(HERMES_HOME, ".env")
+ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
+# 상태(마지막 성공·마지막 실패 알림). 요약에 마지막 실행 시각을 싣는다.
+STATE_PATH = os.environ.get(
+    "HERMES_AUDIT_STATE", os.path.join(HOME, "hermes-ops", "audit-state.json"))
+# 같은 실패로 다시 부르기까지의 최소 간격. 매일 같은 소리를 하면 꺼진다.
+FAIL_RENOTIFY = 6 * 3600
 
 # 스캐너가 만드는 태스크 제목: [<레포> PR review] #<번호> <제목> (<sha>)
 TITLE_RE = re.compile(r"\[([A-Za-z0-9._-]+) PR review\] #(\d+)")
@@ -98,6 +110,55 @@ FEEDBACK_LINES = (
     "> 이 리뷰가 도움이 됐으면 :+1:, 지적이 틀렸으면 :-1: 를 눌러주세요. 오탐 집계에 씁니다.",
     "> 틀린 지적이면 이 코멘트에 👎 반응을 남겨주세요. 오탐 집계에 씁니다.",
 )
+
+
+def read_env(key):
+    """`.env` 에서 값 하나. 게이트웨이가 죽어 있어도 읽을 수 있어야 한다."""
+    try:
+        with open(ENV_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def notify(text):
+    """Slack 으로 보고. 채널이 비어 있으면 조용히 넘어간다."""
+    token = read_env("SLACK_BOT_TOKEN")
+    if not token or not ALERT_CHANNEL:
+        return False
+    body = urllib.parse.urlencode({"channel": ALERT_CHANNEL, "text": text}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage", data=body,
+        headers={"Authorization": "Bearer " + token,
+                 "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return bool(json.loads(r.read().decode()).get("ok"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def load_audit_state():
+    try:
+        with open(STATE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_audit_state(st):
+    try:
+        parent = os.path.dirname(STATE_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except OSError:
+        pass
 
 
 def norm_method(v):
@@ -181,9 +242,26 @@ CREATE TABLE IF NOT EXISTS review_runs (
   sha_ok             INTEGER,
   feedback_ok        INTEGER,
   comment_body       TEXT,     -- 원본 보존. 기준이 바뀌면 재집계한다
+  reactions_up       INTEGER,  -- 사람이 누른 :+1:. SHA 가 맞는 실행에만 귀속
+  reactions_down     INTEGER,  -- 사람이 누른 :-1:. 오탐 신고다
   audited_at         INTEGER
 );
 """
+
+# 이미 만들어진 DB 에는 CREATE TABLE IF NOT EXISTS 가 컬럼을 더해 주지 않는다.
+MIGRATIONS = (
+    ("reactions_up", "ALTER TABLE review_runs ADD COLUMN reactions_up INTEGER"),
+    ("reactions_down", "ALTER TABLE review_runs ADD COLUMN reactions_down INTEGER"),
+)
+
+
+def migrate(conn):
+    """없는 컬럼만 더한다. 기존 행은 NULL 로 남는다 — 그때는 안 세었다는 뜻이고,
+    0 으로 채우면 "아무도 안 눌렀다" 와 구분이 안 된다."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(review_runs)")}
+    for col, ddl in MIGRATIONS:
+        if col not in have:
+            conn.execute(ddl)
 
 
 def load_runs(days):
@@ -230,21 +308,37 @@ def load_runs(days):
 
 
 def fetch_comments(repo, pr, token, cache):
-    """PR 의 봇 코멘트 목록. PR 단위로 한 번만 조회한다."""
+    """PR 의 봇 코멘트 목록. 각 항목은 {body, up, down}. PR 단위로 한 번만 조회.
+
+    예전에는 `.body` 만 뽑아 받은 문자열을 MARKER 로 쪼갰다. 본문 안에 마커가
+    우연히 들어 있으면 한 코멘트를 둘로 세는 방식이었고, 반응은 아예 못 읽었다.
+    한 줄에 JSON 하나씩 받으면 쪼갤 필요가 없고 반응도 같이 온다.
+    """
     key = (repo, pr)
     if key in cache:
         return cache[key]
-    out = gh_api("repos/%s/%s/issues/%d/comments" % (ORG, repo, pr),
-                 '.[] | select(.user.login=="%s") | .body' % BOT_LOGIN, token)
+    out = gh_api(
+        "repos/%s/%s/issues/%d/comments" % (ORG, repo, pr),
+        '.[] | select(.user.login=="%s") '
+        '| {body: .body, up: .reactions["+1"], down: .reactions["-1"]}' % BOT_LOGIN,
+        token)
     if out is None:
         cache[key] = None
         return None
-    # --jq 가 코멘트마다 한 덩어리씩 낸다. 마커로 나눠 되붙인다.
-    bodies = [b for b in out.split(MARKER) if b.strip()]
-    bodies = [MARKER + b for b in bodies] if MARKER in out else (
-        [out] if out.strip() else [])
-    cache[key] = bodies
-    return bodies
+    items = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        items.append({"body": d.get("body") or "",
+                      "up": d.get("up") or 0,
+                      "down": d.get("down") or 0})
+    cache[key] = items
+    return items
 
 
 def audit(run, bodies):
@@ -255,11 +349,16 @@ def audit(run, bodies):
     if bodies is None:
         r.update(comment_scope="조회실패", comment_count=None, marker_ok=None,
                  verify_ok=None, verify_method=None, method_ok=None, sha_ok=None,
-                 feedback_ok=None, comment_body=None)
+                 feedback_ok=None, comment_body=None,
+                 reactions_up=None, reactions_down=None)
         return r
 
     r["comment_count"] = len(bodies)
-    body = bodies[-1] if bodies else ""
+    last = bodies[-1] if bodies else {"body": "", "up": 0, "down": 0}
+    body = last["body"]
+    # 반응은 SHA 가 맞을 때만 귀속한다. 아래에서 same 을 보고 채운다.
+    r["reactions_up"] = None
+    r["reactions_down"] = None
 
     # 이 실행의 코멘트가 맞는지. 아니면 이후 리뷰가 덮어쓴 것이다.
     bm = BODY_SHA_RE.search(body)
@@ -269,6 +368,11 @@ def audit(run, bodies):
                  verify_method=None, method_ok=0, sha_ok=0, feedback_ok=0,
                  comment_body="")
         return r
+    if same:
+        # 이 실행의 코멘트가 지금 남아 있는 것이다. 사람이 본 것도 이것이므로
+        # 반응을 여기 붙인다. 덮어쓴 실행에 붙이면 같은 반응이 여러 번 세어진다.
+        r["reactions_up"] = last["up"]
+        r["reactions_down"] = last["down"]
     if not same:
         r.update(comment_scope="덮어씀", marker_ok=None, verify_ok=None,
                  verify_method=None, method_ok=None, sha_ok=None, feedback_ok=None,
@@ -308,6 +412,7 @@ def save(rows, db_path):
         os.makedirs(parent, exist_ok=True)
     c = sqlite3.connect(db_path)
     c.executescript(SCHEMA)
+    migrate(c)
     now = int(time.time())
     with c:
         for r in rows:
@@ -315,8 +420,9 @@ def save(rows, db_path):
                 "INSERT INTO review_runs (task_id,repo,pr,head_sha,status,"
                 "created_at,duration_min,kanban_first_line,kanban_ok,"
                 "comment_scope,comment_count,marker_ok,verify_ok,verify_method,"
-                "method_ok,sha_ok,feedback_ok,comment_body,audited_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "method_ok,sha_ok,feedback_ok,comment_body,"
+                "reactions_up,reactions_down,audited_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(task_id) DO UPDATE SET "
                 "kanban_first_line=excluded.kanban_first_line,"
                 "kanban_ok=excluded.kanban_ok,comment_scope=excluded.comment_scope,"
@@ -324,13 +430,17 @@ def save(rows, db_path):
                 "verify_ok=excluded.verify_ok,verify_method=excluded.verify_method,"
                 "method_ok=excluded.method_ok,sha_ok=excluded.sha_ok,"
                 "feedback_ok=excluded.feedback_ok,"
-                "comment_body=excluded.comment_body,audited_at=excluded.audited_at",
+                "comment_body=excluded.comment_body,"
+                "reactions_up=excluded.reactions_up,"
+                "reactions_down=excluded.reactions_down,"
+                "audited_at=excluded.audited_at",
                 (r["task_id"], r["repo"], r["pr"], r["head_sha"], r["status"],
                  r["created_at"], r["duration_min"], r["first_line"],
                  r["kanban_ok"], r["comment_scope"], r.get("comment_count"),
                  r.get("marker_ok"), r.get("verify_ok"), r.get("verify_method"),
                  r.get("method_ok"), r.get("sha_ok"), r.get("feedback_ok"),
-                 r.get("comment_body"), now))
+                 r.get("comment_body"), r.get("reactions_up"),
+                 r.get("reactions_down"), now))
     c.close()
 
 
@@ -394,25 +504,136 @@ def report(rows):
     return 0
 
 
+def fail(reason):
+    """실패를 한 자리로 모은다. 예외든 설정 누락이든 같은 길로 지나간다.
+
+    예전에는 알림이 `except Exception` 에만 걸려 있었다. 설정 누락은 예외가
+    아니라 조기 반환이라 그 경로가 조용했다. install.sh 는 토큰 없이도 등록을
+    허용하므로, 가장 흔한 실패가 하필 알림 없는 쪽이었다.
+
+    같은 실패를 매일 보내지는 않는다. 첫 설치에서 토큰을 아직 안 넣었을 때
+    하루에 한 번씩 같은 소리를 하면 사람이 알림을 끈다.
+    """
+    print(reason, file=sys.stderr)
+    try:
+        st = load_audit_state()
+        now = int(time.time())
+        if now - st.get("last_fail_notified", 0) > FAIL_RENOTIFY:
+            notify(":warning: *리뷰 감사가 실패했습니다*\n```\n%s\n```\n"
+                   "PR 자동리뷰 자체는 계속 돕니다. 측정만 멈춥니다."
+                   % str(reason)[:300])
+            st["last_fail_notified"] = now
+            save_audit_state(st)
+    except Exception:
+        # 알림이 실패해도 종료 코드는 남긴다. 알림은 덤이다.
+        pass
+    return 2
+
+
+def weekly_summary(rows, days, state):
+    """슬랙에 보낼 한 덩어리. 읽는 사람이 무엇을 할지 알 수 있게 쓴다.
+
+    숫자만 던지면 읽히지 않는다. 어느 레포에서 무엇이 깨졌는지, 오탐 신고가
+    달린 PR 이 어디인지를 짚는다.
+    """
+    scored = [r for r in rows if r.get("comment_scope") == "현재"]
+    durs = sorted(r["duration_min"] for r in rows if r.get("duration_min"))
+    median = durs[len(durs) // 2] if durs else None
+
+    # 계약 위반을 레포별로 모은다. 한 레포에서 반복되면 그것이 고칠 지점이다.
+    broken = {}
+    for r in scored:
+        bad = []
+        if r.get("marker_ok") == 0:
+            bad.append("마커")
+        if r.get("verify_ok") == 0:
+            bad.append("검증블록")
+        if r.get("method_ok") == 0:
+            bad.append("검증방법")
+        if r.get("sha_ok") == 0:
+            bad.append("head SHA")
+        if r.get("comment_count") and r["comment_count"] > 1:
+            bad.append("코멘트중복")
+        if bad:
+            broken.setdefault(r["repo"], []).extend(bad)
+    kanban_bad = [r for r in rows if r.get("kanban_ok") == 0]
+
+    up = sum(r.get("reactions_up") or 0 for r in scored)
+    down = sum(r.get("reactions_down") or 0 for r in scored)
+    flagged = [r for r in scored if (r.get("reactions_down") or 0) > 0]
+
+    lines = ["*PR 자동리뷰 주간 요약* — 최근 %d일" % days]
+    lines.append("리뷰 %d건 · 채점 대상 %d건%s"
+                 % (len(rows), len(scored),
+                    " · 중앙 %.1f분" % median if median else ""))
+
+    if broken:
+        lines.append("")
+        lines.append("*계약 위반*")
+        for repo, items in sorted(broken.items(),
+                                  key=lambda kv: -len(kv[1]))[:5]:
+            cnt = {}
+            for it in items:
+                cnt[it] = cnt.get(it, 0) + 1
+            lines.append("  • %s — %s" % (
+                repo, " · ".join("%s %d" % (k, v) for k, v in
+                                 sorted(cnt.items(), key=lambda kv: -kv[1]))))
+    if kanban_bad:
+        lines.append("  • 칸반 첫 줄 형식 %d건 — 슬랙 알림이 태스크 제목으로 대체된다"
+                     % len(kanban_bad))
+    if not broken and not kanban_bad:
+        lines.append("계약 위반 없음")
+
+    lines.append("")
+    if up or down:
+        lines.append("*반응* 👍 %d · 👎 %d" % (up, down))
+        for r in flagged[:3]:
+            lines.append("  • 오탐 신고: %s #%d" % (r["repo"], r["pr"]))
+    else:
+        lines.append("*반응* 아직 없음 — 리뷰가 맞았는지 틀렸는지 재는 유일한 수단입니다. "
+                     "코멘트에 👍/👎 를 눌러주세요.")
+
+    last = state.get("last_ok")
+    if last:
+        lines.append("")
+        lines.append("_마지막 감사 %s_"
+                     % time.strftime("%m-%d %H:%M", time.localtime(last)))
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=30, help="며칠치를 볼지 (기본 30)")
     ap.add_argument("--db", default=OUT_DB, help="원본을 쌓을 SQLite 경로")
     ap.add_argument("--quiet", action="store_true", help="표를 찍지 않는다")
+    ap.add_argument("--slack-report", action="store_true",
+                    help="월요일이면 주간 요약을 Slack 으로 보낸다")
+    ap.add_argument("--force-report", action="store_true",
+                    help="요일과 무관하게 요약을 보낸다 (점검용)")
     args = ap.parse_args()
 
     if not ORG:
-        print("GITHUB_ORG 가 비어 있습니다.", file=sys.stderr)
-        return 2
+        return fail("GITHUB_ORG 가 비어 있습니다. 감사가 아무 PR 도 조회하지 못합니다.")
     token = gh_token()
     if not token:
-        print("GitHub 토큰을 못 읽었습니다.", file=sys.stderr)
-        return 2
+        return fail("GitHub 토큰을 못 읽었습니다 (%s). 감사가 코멘트를 조회하지 못합니다."
+                    % TOKEN_FILE)
 
     runs = load_runs(args.days)
     cache = {}
     rows = [audit(r, fetch_comments(r["repo"], r["pr"], token, cache)) for r in runs]
     save(rows, args.db)
+
+    state = load_audit_state()
+    # 월요일에만 보낸다. 매일 통계를 보내면 소음이 되고, 소음이 되면 사람이
+    # 알림을 끈다. 지금 슬랙에는 리뷰 알림이 하루 12건 나간다.
+    if (args.force_report
+            or (args.slack_report and time.localtime().tm_wday == 0)):
+        notify(weekly_summary(rows, args.days, state))
+    state["last_ok"] = int(time.time())
+    state.pop("last_fail_notified", None)
+    save_audit_state(state)
+
     if args.quiet:
         return 0
     rc = report(rows)
@@ -424,5 +645,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:
-        print("오류: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
-        sys.exit(2)
+        # 조용히 죽는 것이 실제로 일어난 일이다. 2026-08-24 이후 나흘간
+        # 멈춰 있었고 아무도 몰랐다. 설정 누락과 같은 자리로 보낸다.
+        import traceback
+        traceback.print_exc()
+        sys.exit(fail("%s: %s" % (type(exc).__name__, exc)))
