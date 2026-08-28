@@ -11,7 +11,7 @@ set -euo pipefail
 OPS_DIR="${HERMES_OPS_DIR:-$HOME/hermes-ops}"
 LA_DIR="$HOME/Library/LaunchAgents"
 PREFIX="${LAUNCHD_PREFIX:-com.local}"
-JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-worktree-gc hermes-metrics hermes-webhook-receiver hermes-pr-notifier)
+JOBS=(hermes-watchdog hermes-pr-scanner hermes-worktree-reaper hermes-worktree-gc hermes-metrics hermes-webhook-receiver hermes-pr-notifier hermes-review-audit)
 
 if [ "${1:-}" = "--uninstall" ]; then
   for j in "${JOBS[@]}"; do
@@ -73,6 +73,14 @@ program_for() {
     hermes-worktree-gc)
       echo "    <string>/bin/bash</string>"
       echo "    <string>$OPS_DIR/$1.sh</string>" ;;
+    hermes-review-audit)
+      echo "    <string>/usr/bin/python3</string>"
+      echo "    <string>$OPS_DIR/$1.py</string>"
+      # 30일 창인 이유는 반응이 리뷰 며칠 뒤에 눌리기 때문이다. 창이 좁으면
+      # 나중에 눌린 것을 영영 읽지 못한다. --slack-report 는 월요일에만 보낸다.
+      echo "    <string>--days</string><string>30</string>"
+      echo "    <string>--slack-report</string>"
+      echo "    <string>--quiet</string>" ;;
     *)
       echo "    <string>/usr/bin/python3</string>"
       echo "    <string>$OPS_DIR/$1.py</string>" ;;
@@ -85,6 +93,9 @@ schedule_for() {
     hermes-watchdog)        echo "<key>StartInterval</key><integer>120</integer>" ;;
     hermes-pr-scanner)      echo "<key>StartInterval</key><integer>180</integer>" ;;
     hermes-worktree-reaper) echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>" ;;
+    # 매일 한 번. 리뷰가 계약대로 동작했는지와 오탐 신고(반응)를 쌓는다.
+    # 월요일에만 주간 요약을 Slack 으로 보낸다(--slack-report).
+    hermes-review-audit)    echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>" ;;
     hermes-worktree-gc)     echo "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>0</integer></dict>" ;;
     hermes-metrics|hermes-webhook-receiver|hermes-pr-notifier)
       # 주기 실행이 아니라 상주한다. 죽으면 launchd 가 되살린다.
