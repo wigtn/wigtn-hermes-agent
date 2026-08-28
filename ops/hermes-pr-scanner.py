@@ -39,9 +39,6 @@ GATEWAY_LABEL = os.environ.get("HERMES_GATEWAY_LABEL", "ai.hermes.gateway")
 ALERT_CHANNEL = os.environ.get("ALERT_CHANNEL", "")
 # 토큰 파일. GH_TOKEN 환경변수가 있으면 그쪽이 우선한다.
 KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
-# 가벼운 변경에 쓸 모델. 비우면 라우팅하지 않고 기본 모델을 쓴다.
-LIGHT_MODEL = os.environ.get("HERMES_LIGHT_MODEL", "")
-LIGHT_MAX_CHANGES = int(os.environ.get("HERMES_LIGHT_MAX_CHANGES", "200"))
 TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", os.path.join(HERMES_HOME, "gh_token"))
 LOG_PATH = os.path.join(LOG_DIR, "hermes-pr-scanner.log")
 STATE_PATH = os.path.join(HERMES_HOME, "pr-scanner-state.json")
@@ -307,20 +304,30 @@ event 는 문제 없으면 APPROVE, 반드시 고칠 것이 있으면 REQUEST_CH
 
 ## 칸반 완료
 
-첫 줄은 이 형식이어야 한다.
+**리뷰를 마쳤으면** 첫 줄은 판정에 따라 이 셋 중 하나다.
 
-`✅ [{repo}] PR #{number} <판정> — <요약 코멘트 URL>`
+`✅ [{repo}] PR #{number} 승인 — <요약 코멘트 URL>`
+`🔴 [{repo}] PR #{number} 변경 요청 — <요약 코멘트 URL>`
+`💬 [{repo}] PR #{number} 의견 — <요약 코멘트 URL>`
 
-판정은 승인, 변경 요청, 의견 중 하나다.
+**차단급 문제를 찾은 것은 리뷰를 마친 것이다.** 그때는 `🔴 변경 요청` 이다.
+작성자 본인 PR 이라 GitHub 가 REQUEST_CHANGES 를 거부해 COMMENT 로 제출했더라도
+칸반 첫 줄은 `🔴 변경 요청` 으로 쓴다. 판정은 리뷰 내용으로 정하지 GitHub 의
+API 제약으로 정하지 않는다.
 
-보류일 때도 **첫 줄은 반드시** 이 형식이어야 한다.
+**리뷰를 하지 못했을 때만** 보류다. 위 `## 먼저` 에 적힌 두 경우뿐이다 —
+워크트리 체크아웃 실패, 그리고 낡은 큐.
 
-`⏸ [{repo}] PR #{number} 리뷰 보류 — <한 줄 사유>`
+`⏸ [{repo}] PR #{number} 리뷰 못 함 — <한 줄 사유>`
 
-사유를 먼저 쓰거나 다른 말로 시작하면, 알림이 이 줄을 못 읽고 태스크 제목으로
-대체한다. 그러면 슬랙을 보는 사람에게 **왜 멈췄는지가 통째로 사라진다.**
-실제로 2026-08-26 에 보류 4건이 그렇게 나가서 팀이 원인을 알 수 없었다.
-긴 설명은 둘째 줄부터 쓴다.
+차단급 문제를 찾았다고 보류로 내리지 않는다. 슬랙에는 이 첫 줄이 그대로
+나가고, 팀은 `⏸` 를 "리뷰가 멈췄다" 로 읽는다. 리뷰를 다 하고 문제를 찾은
+것을 멈췄다고 알리면 정반대로 전달된다. 실제로 그렇게 읽혀 혼란이 있었다.
+
+어느 경우든 첫 줄은 위 형식으로 **시작**해야 한다. 사유를 먼저 쓰거나 다른 말로
+시작하면, 알림이 이 줄을 못 읽고 태스크 제목으로 대체한다. 그러면 슬랙을 보는
+사람에게 **판정이 통째로 사라진다.** 실제로 2026-08-26 에 4건이 그렇게 나가서
+팀이 결과를 알 수 없었다. 긴 설명은 둘째 줄부터 쓴다.
 
 모든 산출물은 쉬운 한국어로 쓴다. 같은 head SHA 에 이미 제출했으면 중복 제출하지 않는다.
 """
@@ -369,65 +376,7 @@ def ensure_repo(token, repo):
 
 
 # 문서/설정으로 취급할 확장자. 이것만 바뀌었고 규모가 작으면 가벼운 모델로 돌린다.
-DOC_EXT = {".md", ".txt", ".rst", ".adoc", ".yml", ".yaml",
-           ".json", ".toml", ".cfg", ".ini"}
-DOC_NAMES = {"LICENSE", ".gitignore", ".gitattributes", ".editorconfig"}
-
-
-def pick_model(token, repo, number, detail):
-    """가벼운 변경이면 가벼운 모델 이름을, 아니면 None 을 준다.
-
-    판단 근거를 좁게 잡는다. 코드가 한 줄이라도 섞이면 기본 모델을 쓴다.
-    리뷰 품질을 아끼자고 놓치는 것보다 한도를 더 쓰는 편이 낫다.
-    """
-    if not LIGHT_MODEL:
-        return None
-    size = (detail.get("additions") or 0) + (detail.get("deletions") or 0)
-    if size > LIGHT_MAX_CHANGES:
-        return None
-    r = run([GH, "api", "repos/%s/%s/pulls/%d/files" % (ORG, repo, number),
-             "--paginate", "--jq", "[.[].filename]"], {"GH_TOKEN": token})
-    if r.returncode != 0:
-        return None
-    try:
-        files = json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not files:
-        return None
-    for f in files:
-        base = os.path.basename(f)
-        ext = os.path.splitext(base)[1].lower()
-        if ext not in DOC_EXT and base not in DOC_NAMES:
-            return None
-    return LIGHT_MODEL
-
-
-def unblock_task(task_id):
-    """모델 확정 후 큐에 풀어준다."""
-    r = run([HERMES_BIN, "kanban", "unblock", task_id], timeout=60)
-    if r.returncode != 0:
-        log("  unblock 실패 %s: %s" % (task_id, r.stderr.strip()[:120]))
-        return False
-    return True
-
-
-def set_model_override(task_id, model):
-    """디스패처가 워커를 띄울 때 -m <model> 로 넘겨준다."""
-    try:
-        conn = sqlite3.connect(KANBAN_DB, timeout=10)
-        with conn:
-            conn.execute("UPDATE tasks SET model_override = ? WHERE id = ?",
-                         (model, task_id))
-        conn.close()
-        return True
-    except sqlite3.Error as e:
-        log("  모델 지정 실패 %s: %s" % (task_id, e))
-        return False
-
-
-def create_task(repo, number, title, sha, url, dry_run, repo_path=None,
-                start_blocked=False):
+def create_task(repo, number, title, sha, url, dry_run, repo_path=None):
     key = "%s-pr-review:%d:%s" % (repo, number, sha)
     task_title = "[%s PR review] #%d %s (%s)" % (repo, number, title, sha)
     if dry_run:
@@ -443,10 +392,7 @@ def create_task(repo, number, title, sha, url, dry_run, repo_path=None,
              "--skill", SKILL,
              "--idempotency-key", key,
              "--created-by", "pr-scanner",
-             "--json"]
-            # 모델을 지정할 태스크는 blocked 로 만든다. 디스패처가 모델이
-            # 확정되기 전에 집어가면 기본 모델로 돌아버리기 때문이다.
-            + (["--initial-status", "blocked"] if start_blocked else []),
+             "--json"],
             timeout=180)
     if r.returncode != 0:
         log("  생성 실패 %s#%d: %s" % (repo, number, r.stderr.strip()[:160]))
@@ -645,31 +591,16 @@ def main():
             repo_path = ensure_repo(token, p["repo"])
             if not repo_path:
                 continue
-        # 모델을 먼저 정한다. 지정할 것이 있으면 blocked 로 만들어
-        # 디스패처가 모델 확정 전에 집어가지 못하게 한다.
-        model = pick_model(token, p["repo"], p["number"], d) if not args.dry_run else None
         tid = create_task(p["repo"], p["number"], p["title"], d["sha"],
-                          d["url"], args.dry_run, repo_path,
-                          start_blocked=bool(model))
+                          d["url"], args.dry_run, repo_path)
         if args.dry_run:
             # dry-run 은 상태를 남기지 않는다. 점검 후 실제 실행했을 때
             # 같은 PR 이 중복으로 건너뛰어지면 안 된다.
             continue
         if tid:
-            if model:
-                # 순서가 중요하다. 모델을 박고 나서 풀어준다.
-                # 지정에 실패하면 풀지 않는다. 기본 모델로 새어나가는 것보다
-                # 막아두고 사람이 보는 편이 낫다.
-                if set_model_override(tid, model) and unblock_task(tid):
-                    log("  생성 %s  %s#%d  (문서 변경 -> %s)"
-                        % (tid, p["repo"], p["number"], model))
-                else:
-                    log("  경고: %s 모델 지정 실패로 blocked 유지 (%s#%d)"
-                        % (tid, p["repo"], p["number"]))
-            else:
-                # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
-                # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
-                log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
+            # 칸반 기본 알림은 구독하지 않는다. 판정과 코멘트 URL 이 빠지기 때문에
+            # announce_finished() 가 완료 요약 첫 줄을 그대로 보낸다.
+            log("  생성 %s  %s#%d" % (tid, p["repo"], p["number"]))
             created += 1
             seen.add(key)
 
