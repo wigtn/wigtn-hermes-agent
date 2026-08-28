@@ -301,23 +301,48 @@ def kanban_corrupt():
     return None if r == "ok" else r
 
 
-def snapshot_board(dest):
-    """보드를 뜬다. `-wal` 까지 함께 뜬다.
+def _fingerprint():
+    """본체와 `-wal` 의 (크기, mtime). 복사 중에 달라졌는지 보는 데 쓴다."""
+    out = []
+    for p in (KANBAN_DB, KANBAN_DB + "-wal"):
+        try:
+            st = os.stat(p)
+            out.append((st.st_size, st.st_mtime_ns))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def snapshot_board(dest, tries=3):
+    """보드를 뜬다. `-wal` 까지 함께 뜨고, 둘이 어긋나지 않았음을 확인한다.
 
     본체만 뜨면 WAL 에 아직 체크포인트되지 않은 커밋이 빠진다. 그 상태로
     `.recover` 를 돌리면 최근 태스크가 사라진 복구본이 나오는데
     `quick_check` 는 `ok` 라서 사람이 검증해도 통과한다.
 
+    둘을 따로 복사하므로 그 사이에 체크포인트가 일어나면 반대 방향으로
+    어긋난다 — 본체 사본은 옛 상태인데 WAL 사본은 이미 비워진 상태. 결과는
+    같다. `ok` 인 복구본이 최신 태스크를 조용히 잃는다.
+
+    실제로는 손상된 보드에서만 도는 경로다. Hermes 가 열기를 거부하고
+    디스패처가 격리하므로 쓰는 사람이 없다. 그러나 그 보장은 코드에 없다.
+    복사 전후의 지문이 흔들리면 다시 뜨고, 끝내 안정되지 않으면 False 를
+    준다. 일관성을 확인하지 못한 사본으로 복구본을 만들지 않는다.
+
     `-shm` 은 뜨지 않는다. SQLite 가 `-wal` 로부터 다시 만든다. stale 한
     `-shm` 을 같이 두면 어긋난 인덱스를 물려줄 수 있다.
-
-    순서는 본체 다음 WAL 이다. 반대로 하면 그 사이의 체크포인트가 WAL 에서
-    빠진 내용을 본체에도 없는 것으로 만든다.
     """
-    shutil.copy2(KANBAN_DB, dest)
-    src = KANBAN_DB + "-wal"
-    if os.path.exists(src):
-        shutil.copy2(src, dest + "-wal")
+    for _ in range(tries):
+        before = _fingerprint()
+        shutil.copy2(KANBAN_DB, dest)
+        src = KANBAN_DB + "-wal"
+        if os.path.exists(src):
+            shutil.copy2(src, dest + "-wal")
+        elif os.path.exists(dest + "-wal"):
+            os.unlink(dest + "-wal")
+        if _fingerprint() == before:
+            return True
+    return False
 
 
 def prepare_recovery():
@@ -340,7 +365,10 @@ def prepare_recovery():
         for p in (snap, snap + "-wal", out):
             if os.path.exists(p):
                 os.unlink(p)
-        snapshot_board(snap)
+        if not snapshot_board(snap):
+            # 보드가 복사 중에 계속 움직인다. 일관성을 확인하지 못한 사본으로
+            # 복구본을 만들면, 사람은 성해 보이는 파일을 넣고 태스크를 잃는다.
+            return None
         sql = subprocess.run(["/usr/bin/sqlite3", snap, ".recover"],
                              capture_output=True, text=True, timeout=300)
         if not sql.stdout:

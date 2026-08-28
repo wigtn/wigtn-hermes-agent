@@ -127,9 +127,7 @@ def main():
 
     print("=== 4. 교체 (-wal / -shm 포함) ===")
     # 실패할 수 있는 일을 먼저 끝낸다. 여기까지는 되돌릴 수 있다 — 보드도
-    # sidecar 도 손대지 않았다. 순서가 거꾸로면(sidecar 를 먼저 지우면)
-    # 복사가 실패했을 때 손상된 보드는 그대로인데 WAL 만 사라진다. 거기
-    # 있던 미체크포인트 태스크는 그 순간 복구 불가능해진다.
+    # 사이드카도 손대지 않았다.
     tmp = DB + ".incoming"
     if os.path.exists(tmp) and not os.path.isfile(tmp):
         sys.exit("%s 가 파일이 아닙니다. 치우고 다시 실행하세요." % tmp)
@@ -146,53 +144,89 @@ def main():
                  "보드와 -wal / -shm 은 그대로입니다. 손상본은 %s 에 있습니다."
                  % (e, keep))
 
-    # 옛 WAL 은 지우지 않고 **옆으로 치운다**. 남겨 두면 새 본체를 옛 WAL 로
-    # 해석하므로 치우기는 해야 하는데, 지워 버리면 뒤이은 os.replace 가
-    # 실패했을 때 되돌릴 것이 없다. 그러면 손상된 보드는 그대로인데 WAL 만
-    # 사라져, 복구 도구가 복구는 못 하고 데이터만 잃는다.
-    moved = []
-    for suffix in ("-wal", "-shm"):
-        p = DB + suffix
-        if os.path.exists(p):
-            away = p + ".replacing"
-            if os.path.exists(away):
-                os.unlink(away)          # 이전 실패의 잔재
-            os.replace(p, away)
-            moved.append((away, p))
-            print("  치움 %s" % os.path.basename(p))
+    # 원본과 사이드카를 **지우지 않고 옆으로 치운다**. 검증까지 끝난 뒤에
+    # 지운다. 지워 버리면 어느 단계에서 실패하든 되돌릴 것이 없고, "실패하면
+    # 보드와 사이드카는 그대로" 라는 이 도구의 계약이 깨진다. 복구 도구가
+    # 장애를 키우는 것은 고치려던 것보다 나쁘다.
+    PREVIOUS = DB + ".previous"
+    moved = []                      # [(치운 자리, 제자리)]
 
-    try:
-        os.replace(tmp, DB)      # 같은 파일시스템 -> 원자적 교체
-    except OSError as e:
-        for away, p in moved:    # 되돌린다
+    def rollback():
+        """치운 것을 전부 제자리로. 되돌리지 못한 것의 목록을 준다.
+
+        되돌리기도 실패할 수 있다. 교체가 권한이나 파일시스템 문제로 실패했다면
+        같은 자리로 되돌리는 것도 같은 이유로 실패한다. 그때 "되돌렸습니다" 라고
+        말하면 안 된다. 사람은 그 말을 믿고 손을 뗀다. 무엇이 어디 남았는지
+        알려야 손으로 살릴 수 있다.
+        """
+        left = []
+        try:
+            if os.path.isfile(DB):
+                os.unlink(DB)
+        except OSError:
+            pass
+        for away, p in moved:
             try:
                 os.replace(away, p)
             except OSError:
-                pass
+                left.append((away, p))
+        return left
+
+
+    def bail(headline):
+        """되돌린 결과를 정직하게 알리고 멈춘다."""
+        left = rollback()
         try:
             if os.path.isfile(tmp):
                 os.unlink(tmp)
         except OSError:
             pass
-        sys.exit("교체하지 못했습니다: %s\n"
-                 "보드와 -wal / -shm 을 되돌렸습니다. 손상본은 %s 에 있습니다."
-                 % (e, keep))
+        if left:
+            sys.exit("%s\n"
+                     "**되돌리지 못한 것이 있습니다.** 손으로 옮겨야 합니다.\n%s\n"
+                     "손상본은 %s 에 있습니다."
+                     % (headline,
+                        "\n".join("  %s  ->  %s" % (a, p) for a, p in left),
+                        keep))
+        sys.exit("%s\n보드와 -wal / -shm 을 되돌렸습니다. 손상본은 %s 에 있습니다."
+                 % (headline, keep))
 
-    # 교체가 끝났다. 이제 치워 둔 것을 지운다.
-    for away, _ in moved:
-        try:
-            os.unlink(away)
-        except OSError:
-            pass
-    print("  교체 완료")
+    try:
+        for suffix in ("-wal", "-shm"):
+            p = DB + suffix
+            if os.path.exists(p):
+                away = p + ".replacing"
+                if os.path.exists(away):
+                    os.unlink(away)          # 이전 실패의 잔재
+                os.replace(p, away)
+                moved.append((away, p))
+                print("  치움 %s" % os.path.basename(p))
+        if os.path.exists(PREVIOUS):
+            os.unlink(PREVIOUS)
+        os.replace(DB, PREVIOUS)             # 원본을 옆으로
+        moved.append((PREVIOUS, DB))
+        os.replace(tmp, DB)                  # 같은 파일시스템 -> 원자적
+    except OSError as e:
+        bail("교체하지 못했습니다: %s" % e)
+    print("  교체 완료 (검증 전)")
 
     print("=== 5. 검증 ===")
     r = integrity(DB)
     print("  quick_check: %s" % r)
     if r != "ok":
-        sys.exit("교체 후에도 성하지 않습니다.")
-    t, e = counts(DB)
+        bail("교체 후 검증에 실패했습니다: %s" % r)
+    try:
+        t, e = counts(DB)
+    except sqlite3.Error as exc:
+        bail("교체 후 보드를 읽지 못했습니다: %s" % exc)
     print("  tasks=%d  task_events=%d" % (t, e))
+
+    # 검증까지 끝났다. 이제 치워 둔 것을 지운다.
+    for away, _ in moved:
+        try:
+            os.unlink(away)
+        except OSError:
+            pass
 
     print("=== 6. Hermes 가 여는지 ===")
     p = subprocess.run([HERMES_BIN, "kanban", "list", "--status", "running"],
