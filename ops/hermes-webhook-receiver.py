@@ -58,10 +58,30 @@ def log(msg):
         pass
 
 
+# 이 수신기가 스캐너에서 쓰는 것들. 스캐너 쪽이 바뀌면 여기서 바로 걸린다.
+SCANNER_API = ("DENYLIST", "gh_token", "load_state", "ensure_repo", "create_task")
+
+
 def load_scanner():
+    """스캐너를 모듈로 읽고, 이 수신기가 쓰는 것이 다 있는지 확인한다.
+
+    `SC` 는 모듈 레벨에서 한 번만 만들어진다. 그래서 스캐너에서 함수가
+    사라져도 돌고 있는 프로세스는 옛 코드를 들고 멀쩡히 동작하고, 다음
+    재시작 때 비로소 터진다. 2026-08-28 에 실제로 그런 상태였다 —
+    경량 모델 라우팅을 걷어냈는데 수신기는 그것을 계속 부르고 있었고,
+    증상은 없었다.
+
+    조용히 잠복하는 것보다 뜰 때 큰 소리로 죽는 편이 낫다. 재시작은
+    보통 사람이 지켜보는 중에 일어난다.
+    """
     spec = importlib.util.spec_from_file_location("pr_scanner", SCANNER)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    missing = [n for n in SCANNER_API if not hasattr(mod, n)]
+    if missing:
+        raise RuntimeError(
+            "스캐너에 %s 가 없습니다 (%s). 수신기를 새 API 에 맞춰야 합니다."
+            % (", ".join(missing), SCANNER))
     return mod
 
 
@@ -135,26 +155,11 @@ def handle_pull_request(payload):
     if not repo_path:
         return
 
-    # 모델을 먼저 정한다. 태스크를 만든 뒤에 넣으면 그 사이에 디스패처가
-    # 집어가 기본 모델로 돌아버린다. 스캐너와 같은 순서를 쓴다.
-    detail = {"additions": pr.get("additions") or 0,
-              "deletions": pr.get("deletions") or 0}
-    model = SC.pick_model(token, repo, number, detail)
-
-    tid = SC.create_task(repo, number, title, sha, url, False, repo_path,
-                         start_blocked=bool(model))
+    tid = SC.create_task(repo, number, title, sha, url, False, repo_path)
     if not tid:
         return
 
-    if model:
-        if SC.set_model_override(tid, model) and SC.unblock_task(tid):
-            log("  생성 %s  %s#%s  action=%s  (문서 변경 -> %s)"
-                % (tid, repo, number, action, model))
-        else:
-            log("  경고: %s 모델 지정 실패로 blocked 유지 (%s#%s)"
-                % (tid, repo, number))
-    else:
-        log("  생성 %s  %s#%s  action=%s" % (tid, repo, number, action))
+    log("  생성 %s  %s#%s  action=%s" % (tid, repo, number, action))
 
 
 class Handler(BaseHTTPRequestHandler):
