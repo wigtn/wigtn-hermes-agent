@@ -504,6 +504,32 @@ def report(rows):
     return 0
 
 
+def fail(reason):
+    """실패를 한 자리로 모은다. 예외든 설정 누락이든 같은 길로 지나간다.
+
+    예전에는 알림이 `except Exception` 에만 걸려 있었다. 설정 누락은 예외가
+    아니라 조기 반환이라 그 경로가 조용했다. install.sh 는 토큰 없이도 등록을
+    허용하므로, 가장 흔한 실패가 하필 알림 없는 쪽이었다.
+
+    같은 실패를 매일 보내지는 않는다. 첫 설치에서 토큰을 아직 안 넣었을 때
+    하루에 한 번씩 같은 소리를 하면 사람이 알림을 끈다.
+    """
+    print(reason, file=sys.stderr)
+    try:
+        st = load_audit_state()
+        now = int(time.time())
+        if now - st.get("last_fail_notified", 0) > FAIL_RENOTIFY:
+            notify(":warning: *리뷰 감사가 실패했습니다*\n```\n%s\n```\n"
+                   "PR 자동리뷰 자체는 계속 돕니다. 측정만 멈춥니다."
+                   % str(reason)[:300])
+            st["last_fail_notified"] = now
+            save_audit_state(st)
+    except Exception:
+        # 알림이 실패해도 종료 코드는 남긴다. 알림은 덤이다.
+        pass
+    return 2
+
+
 def weekly_summary(rows, days, state):
     """슬랙에 보낼 한 덩어리. 읽는 사람이 무엇을 할지 알 수 있게 쓴다.
 
@@ -587,12 +613,11 @@ def main():
     args = ap.parse_args()
 
     if not ORG:
-        print("GITHUB_ORG 가 비어 있습니다.", file=sys.stderr)
-        return 2
+        return fail("GITHUB_ORG 가 비어 있습니다. 감사가 아무 PR 도 조회하지 못합니다.")
     token = gh_token()
     if not token:
-        print("GitHub 토큰을 못 읽었습니다.", file=sys.stderr)
-        return 2
+        return fail("GitHub 토큰을 못 읽었습니다 (%s). 감사가 코멘트를 조회하지 못합니다."
+                    % TOKEN_FILE)
 
     runs = load_runs(args.days)
     cache = {}
@@ -621,18 +646,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as exc:
         # 조용히 죽는 것이 실제로 일어난 일이다. 2026-08-24 이후 나흘간
-        # 멈춰 있었고 아무도 몰랐다. 같은 실패를 매일 보내지는 않는다.
+        # 멈춰 있었고 아무도 몰랐다. 설정 누락과 같은 자리로 보낸다.
         import traceback
         traceback.print_exc()
-        try:
-            st = load_audit_state()
-            now = int(time.time())
-            if now - st.get("last_fail_notified", 0) > FAIL_RENOTIFY:
-                notify(":warning: *리뷰 감사가 실패했습니다*\n```\n%s\n```\n"
-                       "PR 자동리뷰 자체는 계속 돕니다. 측정만 멈춥니다."
-                       % str(exc)[:300])
-                st["last_fail_notified"] = now
-                save_audit_state(st)
-        except Exception:
-            pass
-        sys.exit(2)
+        sys.exit(fail("%s: %s" % (type(exc).__name__, exc)))
