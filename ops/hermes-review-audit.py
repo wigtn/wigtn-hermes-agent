@@ -513,19 +513,28 @@ def fail(reason):
 
     같은 실패를 매일 보내지는 않는다. 첫 설치에서 토큰을 아직 안 넣었을 때
     하루에 한 번씩 같은 소리를 하면 사람이 알림을 끈다.
+
+    다만 **보낸 것만 보냈다고 적는다.** `notify()` 는 채널이 비었거나 토큰을
+    못 읽거나 Slack 호출이 실패하면 False 를 돌려준다. 그때도 기록해 버리면
+    보내지 못한 알림이 6시간 동안 재시도를 막는다. 알림이 나가지 않는 그
+    순간이 하필 사람이 가장 알아야 할 때다 — 설정이 잘못됐다는 뜻이니까.
+
+    보내지 못하면 다음 실행이 다시 시도한다. 감사는 하루 한 번이라 매번
+    시도해도 소음이 되지 않는다.
     """
     print(reason, file=sys.stderr)
     try:
         st = load_audit_state()
         now = int(time.time())
         if now - st.get("last_fail_notified", 0) > FAIL_RENOTIFY:
-            notify(":warning: *리뷰 감사가 실패했습니다*\n```\n%s\n```\n"
-                   "PR 자동리뷰 자체는 계속 돕니다. 측정만 멈춥니다."
-                   % str(reason)[:300])
-            st["last_fail_notified"] = now
-            save_audit_state(st)
+            sent = notify(":warning: *리뷰 감사가 실패했습니다*\n```\n%s\n```\n"
+                          "PR 자동리뷰 자체는 계속 돕니다. 측정만 멈춥니다."
+                          % str(reason)[:300])
+            if sent:
+                st["last_fail_notified"] = now
+                save_audit_state(st)
     except Exception:
-        # 알림이 실패해도 종료 코드는 남긴다. 알림은 덤이다.
+        # 알림이 실패해도 종료 코드는 남긴다. 알림은 덤이고 실패 신호가 본체다.
         pass
     return 2
 
